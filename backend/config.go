@@ -19,21 +19,37 @@ type Config struct {
 
 func mustEnv(k string) string {
 	v := os.Getenv(k)
-	if v == "" { log.Fatalf("required env %s", k) }
+	if v == "" {
+		log.Fatalf("required env %s", k)
+	}
 	return v
 }
+
 func env(k, def string) string {
-	v := os.Getenv(k); if v == "" { return def }; return v
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 func parseBanks() []Bank {
 	var out []Bank
-	for _, code := range strings.Split(env("BANKS", ""), ",") {
+	for _, code := range strings.Split(env("BANKS", "vbank,abank,sbank"), ",") {
 		code = strings.TrimSpace(code)
-		if code == "" { continue }
+		if code == "" {
+			continue
+		}
 		envKey := "BASE_URL_" + strings.ToUpper(code)
-		out = append(out, Bank{Code: code, BaseURL: mustEnv(envKey)})
+		baseURL := os.Getenv(envKey)
+		if baseURL == "" {
+			log.Printf("Warning: %s not set, skipping bank %s", envKey, code)
+			continue
+		}
+		out = append(out, Bank{Code: code, BaseURL: baseURL})
 	}
-	if len(out) == 0 { log.Fatal("BANKS is empty (e.g. vbank,abank)") }
+	if len(out) == 0 {
+		log.Fatal("BANKS is empty or no valid bank URLs configured")
+	}
 	return out
 }
