@@ -12,97 +12,44 @@ import (
 	"github.com/google/uuid"
 )
 
-type ctxKey string
+// ContextKey тип для ключей контекста
+type ContextKey string
 
-const ctxRequestID ctxKey = "requestID"
+const (
+	// CtxRequestID ключ для Request ID в контексте
+	CtxRequestID ContextKey = "requestID"
+)
 
-var allowedOrigin = env("CORS_ORIGIN", "http://localhost:5173")
+// ============================================================================
+// MIDDLEWARE КОМПОЗИЦИЯ
+// Правильный порядок: Recovery → RequestID → Logging → Timeout → CORS
+// ============================================================================
 
-// cors добавляет CORS заголовки
-func cors(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
-		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-Id, Authorization")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
+// ApplyMiddleware применяет все middleware в правильном порядке
+func ApplyMiddleware(handler http.Handler, corsOrigin string) http.Handler {
+	// Применяем в обратном порядке (самый внешний последний)
+	handler = withCORS(handler, corsOrigin)
+	handler = withTimeout(handler, 90*time.Second)
+	handler = withLogging(handler)
+	handler = withRequestID(handler)
+	handler = withRecovery(handler)
+	
+	return handler
 }
 
-// withRequestID добавляет request ID в контекст и заголовки
-func withRequestID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get("X-Request-Id")
-		if id == "" {
-			id = uuid.New().String()
-		}
-		w.Header().Set("X-Request-Id", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxRequestID, id)))
-	})
-}
+// ============================================================================
+// RECOVERY - восстановление после паники (самый внешний слой)
+// ============================================================================
 
-// withTimeout добавляет таймаут на запрос
-func withTimeout(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-		defer cancel()
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-// withLogging логирует HTTP запросы
-// Не логирует Bearer токены и чувствительные данные
-func withLogging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		// Wrapper для захвата status code
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
-		// Получаем request ID из контекста
-		requestID := r.Header.Get("X-Request-Id")
-
-		// Маскируем чувствительные заголовки
-		authHeader := r.Header.Get("Authorization")
-		maskedAuth := maskSensitive(authHeader)
-
-		log.Printf("[%s] %s %s | Auth: %s | UA: %s",
-			requestID,
-			r.Method,
-			r.URL.Path,
-			maskedAuth,
-			r.UserAgent(),
-		)
-
-		next.ServeHTTP(wrapped, r)
-
-		duration := time.Since(start)
-		log.Printf("[%s] %s %s | Status: %d | Duration: %v",
-			requestID,
-			r.Method,
-			r.URL.Path,
-			wrapped.statusCode,
-			duration,
-		)
-	})
-}
-
-// withRecovery восстанавливается после паники
 func withRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				requestID := r.Header.Get("X-Request-Id")
+				// ✅ Берем request ID из КОНТЕКСТА, а не из заголовка
+				requestID := getRequestID(r.Context())
+				
 				stack := debug.Stack()
-
-				log.Printf("[%s] PANIC RECOVERED: %v\n%s", requestID, err, string(stack))
+				log.Printf("[%s] 🚨 PANIC RECOVERED: %v\n%s", requestID, err, string(stack))
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
@@ -114,8 +61,118 @@ func withRecovery(next http.Handler) http.Handler {
 	})
 }
 
-// maskSensitive маскирует чувствительные данные (Bearer токены)
-func maskSensitive(value string) string {
+// ============================================================================
+// REQUEST ID - добавление уникального ID запроса
+// ============================================================================
+
+func withRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Берем из заголовка или генерируем новый
+		requestID := r.Header.Get("X-Request-Id")
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
+
+		// Добавляем в заголовок ответа
+		w.Header().Set("X-Request-Id", requestID)
+
+		// ✅ Сохраняем в КОНТЕКСТ
+		ctx := context.WithValue(r.Context(), CtxRequestID, requestID)
+		
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// ============================================================================
+// LOGGING - логирование запросов
+// ============================================================================
+
+func withLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// ✅ Берем request ID из КОНТЕКСТА
+		requestID := getRequestID(r.Context())
+
+		// Wrapper для захвата status code
+		wrapped := &responseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+
+		// Маскируем Bearer токены для безопасности
+		authHeader := r.Header.Get("Authorization")
+		maskedAuth := maskBearer(authHeader)
+
+		log.Printf("[%s] → %s %s | Auth: %s", 
+			requestID, r.Method, r.URL.Path, maskedAuth)
+
+		// Выполняем запрос
+		next.ServeHTTP(wrapped, r)
+
+		// Логируем результат
+		duration := time.Since(start)
+		log.Printf("[%s] ← %s %s | Status: %d | Duration: %v",
+			requestID, r.Method, r.URL.Path, wrapped.statusCode, duration)
+	})
+}
+
+// ============================================================================
+// TIMEOUT - ограничение времени выполнения запроса
+// ============================================================================
+
+func withTimeout(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// ============================================================================
+// CORS - настройка Cross-Origin Resource Sharing
+// ============================================================================
+
+func withCORS(next http.Handler, allowedOrigin string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ✅ Правильные CORS заголовки
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		
+		// ✅ Разрешаем все необходимые заголовки
+		w.Header().Set("Access-Control-Allow-Headers", 
+			"Content-Type, X-Request-Id, X-Consent-Id, Authorization")
+		
+		// ✅ Разрешаем клиенту читать заголовки ответа
+		w.Header().Set("Access-Control-Expose-Headers", 
+			"X-Request-Id, X-Consent-Id")
+
+		// Обрабатываем preflight запросы
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+// getRequestID безопасно извлекает request ID из контекста
+func getRequestID(ctx context.Context) string {
+	if reqID, ok := ctx.Value(CtxRequestID).(string); ok {
+		return reqID
+	}
+	return "unknown"
+}
+
+// maskBearer маскирует Bearer токены для безопасного логирования
+func maskBearer(value string) string {
 	if value == "" {
 		return "none"
 	}
@@ -123,7 +180,7 @@ func maskSensitive(value string) string {
 	if strings.HasPrefix(value, "Bearer ") {
 		token := value[7:]
 		if len(token) > 10 {
-			return "Bearer " + token[:4] + "..." + token[len(token)-4:]
+			return fmt.Sprintf("Bearer %s...%s", token[:4], token[len(token)-4:])
 		}
 		return "Bearer ***"
 	}
@@ -131,7 +188,10 @@ func maskSensitive(value string) string {
 	return "***"
 }
 
-// responseWriter оборачивает http.ResponseWriter для захвата status code
+// ============================================================================
+// RESPONSE WRITER WRAPPER - для захвата status code
+// ============================================================================
+
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int

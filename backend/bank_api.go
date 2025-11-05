@@ -1,74 +1,48 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
 
-// BankAPI определяет интерфейс для работы с банковским API
-// Реализует паттерн Repository для абстракции от конкретного банка
-type BankAPI interface {
-	// CreateConsent создает согласие на доступ к данным клиента
-	// Возвращает consent_id и authorize_url для подтверждения клиентом
-	CreateConsent(ctx context.Context, clientID string, permissions []string, reason string) (*ConsentResponse, error)
-	
-	// GetConsentStatus получает статус согласия
-	GetConsentStatus(ctx context.Context, consentID string) (*ConsentResponse, error)
-	
-	// RevokeConsent отзывает согласие
-	RevokeConsent(ctx context.Context, consentID string) error
-	
-	// GetAccounts получает список счетов клиента
-	GetAccounts(ctx context.Context, consentID, clientID string) ([]AccountDetail, error)
-	
-	// GetAccountDetail получает детали конкретного счета
-	GetAccountDetail(ctx context.Context, consentID, accountID string) (*AccountDetail, error)
-	
-	// GetBalances получает балансы счета
-	GetBalances(ctx context.Context, consentID, accountID string) ([]BalanceDetail, error)
-	
-	// GetTransactions получает транзакции счета за период
-	GetTransactions(ctx context.Context, consentID, accountID string, from, to time.Time) ([]TransactionDetail, error)
-}
-
-// VBankClient реализует BankAPI для Virtual Bank
-type VBankClient struct {
-	baseURL       string
-	clientID      string
-	clientSecret  string
+// BankAPIClient клиент для работы с Banking API одного банка
+type BankAPIClient struct {
+	httpClient     *HTTPClient
+	clientID       string
+	clientSecret   string
 	requestingBank string
-	httpc         *http.Client
-	
-	// Кэш токенов с защитой от гонок
+
+	// Кэш токенов с защитой от race condition
 	mu          sync.RWMutex
 	accessToken string
 	tokenExpiry time.Time
 }
 
-// NewVBankClient создает новый клиент для работы с Virtual Bank API
-func NewVBankClient(baseURL, clientID, clientSecret, requestingBank string) *VBankClient {
-	return &VBankClient{
-		baseURL:        baseURL,
+// NewBankAPIClient создает новый клиент для Banking API
+func NewBankAPIClient(baseURL, clientID, clientSecret, requestingBank string) *BankAPIClient {
+	return &BankAPIClient{
+		httpClient:     NewHTTPClient(baseURL),
 		clientID:       clientID,
 		clientSecret:   clientSecret,
 		requestingBank: requestingBank,
-		httpc: &http.Client{
-			Timeout: 30 * time.Second,
-		},
 	}
 }
 
-// ensureBankToken получает или обновляет bank token
-// Автоматически обновляет токен за 60 секунд до истечения
-func (c *VBankClient) ensureBankToken(ctx context.Context) (string, error) {
+// ============================================================================
+// AUTHENTICATION
+// ============================================================================
+
+// EnsureToken получает или возвращает кэшированный токен
+func (c *BankAPIClient) EnsureToken(ctx context.Context) (string, error) {
+	// Проверяем кэш с защитой от гонок
 	c.mu.RLock()
-	// Проверяем, есть ли валидный токен (с запасом 60 секунд)
 	if c.accessToken != "" && time.Now().Before(c.tokenExpiry.Add(-60*time.Second)) {
 		token := c.accessToken
 		c.mu.RUnlock()
@@ -85,247 +59,224 @@ func (c *VBankClient) ensureBankToken(ctx context.Context) (string, error) {
 		return c.accessToken, nil
 	}
 
-	// Формируем запрос на получение bank token
-	reqBody := map[string]string{
-		"client_id":     c.clientID,
-		"client_secret": c.clientSecret,
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
+	// Запрашиваем токен
+	token, err := c.requestToken(ctx)
 	if err != nil {
-		return "", fmt.Errorf("marshal token request: %w", err)
+		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, 
-		c.baseURL+"/auth/bank-token", bytes.NewReader(bodyBytes))
+	return token, nil
+}
+
+// requestToken запрашивает новый bank token
+func (c *BankAPIClient) requestToken(ctx context.Context) (string, error) {
+	// ✅ ИСПРАВЛЕНИЕ: API ожидает параметры в QUERY STRING!
+	queryParams := url.Values{}
+	queryParams.Set("client_id", c.clientID)
+	queryParams.Set("client_secret", c.clientSecret)
+
+	// Debug логирование
+	log.Printf("[DEBUG] Requesting token with client_id=%s (secret length: %d)", 
+		c.clientID, len(c.clientSecret))
+
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:      http.MethodPost,
+		Path:        "/auth/bank-token",
+		QueryParams: queryParams, // ← Параметры в query!
+		Body:        nil,         // ← Body пустой!
+	})
 	if err != nil {
-		return "", fmt.Errorf("create token request: %w", err)
+		return "", fmt.Errorf("token request: %w", err)
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	// Выполняем запрос с retry логикой
-	var resp *http.Response
-	for attempt := 0; attempt < 3; attempt++ {
-		resp, err = c.httpc.Do(req)
-		if err != nil {
-			if attempt == 2 {
-				return "", fmt.Errorf("bank-token request failed after 3 attempts: %w", err)
-			}
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
-		}
-		
-		// Retry на 5xx ошибки
-		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-			resp.Body.Close()
-			if attempt == 2 {
-				return "", fmt.Errorf("bank-token returned 5xx after 3 attempts: %d", resp.StatusCode)
-			}
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
-		}
-		
-		break
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("bank-token failed: status=%d body=%s", resp.StatusCode, string(body))
+		errBody := ReadErrorResponse(resp)
+		log.Printf("[ERROR] Token request failed: status=%d, body=%s", resp.StatusCode, errBody)
+		return "", fmt.Errorf("token request failed: %s", errBody)
 	}
 
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
-		ExpiresIn   int64  `json:"expires_in"`
-		ClientID    string `json:"client_id"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("decode token response: %w", err)
+	var tokenResp TokenResponse
+	if err := ParseJSONResponse(resp, &tokenResp); err != nil {
+		return "", fmt.Errorf("parse token response: %w", err)
 	}
 
 	if tokenResp.AccessToken == "" {
 		return "", fmt.Errorf("empty access_token in response")
 	}
 
-	// Сохраняем токен в кэш
+	// Сохраняем в кэш
 	c.accessToken = tokenResp.AccessToken
 	c.tokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
 	return c.accessToken, nil
 }
 
+// ============================================================================
+// CONSENT MANAGEMENT
+// ============================================================================
+
 // CreateConsent создает согласие на доступ к данным клиента
-func (c *VBankClient) CreateConsent(ctx context.Context, clientID string, permissions []string, reason string) (*ConsentResponse, error) {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) CreateConsent(ctx context.Context, clientID string, permissions []string, reason string) (*ConsentResponse, error) {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ensure token: %w", err)
 	}
 
-	// Формируем тело запроса согласно спецификации
-	reqBody := map[string]interface{}{
-		"requesting_bank": c.requestingBank,
-		"client_id":       clientID,
-		"permissions":     permissions,
-		"reason":          reason,
-		"auto_approved":   true, // Для упрощения в хакатоне
+	requestBody := ConsentRequest{
+		RequestingBank: c.requestingBank,
+		ClientID:       clientID,
+		Permissions:    permissions,
+		Reason:         reason,
+		AutoApproved:   true,
 	}
 
-	bodyBytes, err := json.Marshal(reqBody)
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
+	}
+
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:  http.MethodPost,
+		Path:    "/account-consents/request",
+		Body:    requestBody,
+		Headers: headers,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal consent request: %w", err)
+		return nil, fmt.Errorf("create consent: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/account-consents/request", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("create consent request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-
-	resp, err := c.doWithRetry(req)
-	if err != nil {
-		return nil, fmt.Errorf("consent request: %w", err)
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("create consent failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("create consent failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
-	var consentResp ConsentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&consentResp); err != nil {
-		return nil, fmt.Errorf("decode consent response: %w", err)
+	var consent ConsentResponse
+	if err := ParseJSONResponse(resp, &consent); err != nil {
+		return nil, fmt.Errorf("parse consent response: %w", err)
 	}
 
-	return &consentResp, nil
+	return &consent, nil
 }
 
 // GetConsentStatus получает статус согласия
-func (c *VBankClient) GetConsentStatus(ctx context.Context, consentID string) (*ConsentResponse, error) {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) GetConsentStatus(ctx context.Context, consentID string) (*ConsentResponse, error) {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ensure token: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/account-consents/"+consentID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-
-	resp, err := c.doWithRetry(req)
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:  http.MethodGet,
+		Path:    "/account-consents/" + consentID,
+		Headers: headers,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get consent: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get consent failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get consent failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
-	var consentResp ConsentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&consentResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	var consent ConsentResponse
+	if err := ParseJSONResponse(resp, &consent); err != nil {
+		return nil, fmt.Errorf("parse consent response: %w", err)
 	}
 
-	return &consentResp, nil
+	return &consent, nil
 }
 
 // RevokeConsent отзывает согласие
-func (c *VBankClient) RevokeConsent(ctx context.Context, consentID string) error {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) RevokeConsent(ctx context.Context, consentID string) error {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return fmt.Errorf("ensure token: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		c.baseURL+"/account-consents/"+consentID, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-
-	resp, err := c.doWithRetry(req)
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:  http.MethodDelete,
+		Path:    "/account-consents/" + consentID,
+		Headers: headers,
+	})
 	if err != nil {
 		return fmt.Errorf("revoke consent: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("revoke consent failed: status=%d body=%s", resp.StatusCode, string(body))
+		return fmt.Errorf("revoke consent failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
+	resp.Body.Close()
 	return nil
 }
 
+// ============================================================================
+// ACCOUNTS
+// ============================================================================
+
 // GetAccounts получает список счетов клиента
-func (c *VBankClient) GetAccounts(ctx context.Context, consentID, clientID string) ([]AccountDetail, error) {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) GetAccounts(ctx context.Context, consentID, clientID string) ([]AccountDetail, error) {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ensure token: %w", err)
 	}
 
-	// Формируем URL с query параметром
-	url := c.baseURL + "/accounts"
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
+		"X-Consent-Id":      consentID,
+	}
+
+	// ✅ ИСПОЛЬЗУЕМ url.Values для безопасного построения query
+	queryParams := url.Values{}
 	if clientID != "" {
-		url += "?client_id=" + clientID
+		queryParams.Set("client_id", clientID)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-	req.Header.Set("X-Consent-Id", consentID)
-
-	resp, err := c.doWithRetry(req)
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:      http.MethodGet,
+		Path:        "/accounts",
+		Headers:     headers,
+		QueryParams: queryParams,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get accounts: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get accounts failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get accounts failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
-	// Читаем сырой ответ для гибкости парсинга
+	// Парсим ответ с поддержкой разных форматов
+	return c.parseAccountsResponse(resp)
+}
+
+// parseAccountsResponse парсит разные форматы ответа со счетами
+func (c *BankAPIClient) parseAccountsResponse(resp *http.Response) ([]AccountDetail, error) {
+	defer resp.Body.Close()
+	
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	// Пробуем разные форматы ответа
-	var accounts []AccountDetail
-	
 	// Вариант 1: массив напрямую
-	if err := json.Unmarshal(bodyBytes, &accounts); err == nil {
-		return accounts, nil
+	var directArray []AccountDetail
+	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
+		return directArray, nil
 	}
 
-	// Вариант 2: объект с полем "accounts"
-	var wrapper struct {
-		Accounts []AccountDetail `json:"accounts"`
-		Data     struct {
-			Accounts []AccountDetail `json:"account"`
-		} `json:"data"`
-	}
+	// Вариант 2: обертка с полем "accounts" (множественное число!)
+	var wrapper AccountsWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Accounts) > 0 {
 			return wrapper.Accounts, nil
@@ -335,208 +286,174 @@ func (c *VBankClient) GetAccounts(ctx context.Context, consentID, clientID strin
 		}
 	}
 
-	return nil, fmt.Errorf("failed to parse accounts response")
+	// Если ничего не распарсилось - возвращаем пустой массив
+	return []AccountDetail{}, nil
 }
 
 // GetAccountDetail получает детали конкретного счета
-func (c *VBankClient) GetAccountDetail(ctx context.Context, consentID, accountID string) (*AccountDetail, error) {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) GetAccountDetail(ctx context.Context, consentID, accountID string) (*AccountDetail, error) {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ensure token: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/accounts/"+accountID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
+		"X-Consent-Id":      consentID,
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-	req.Header.Set("X-Consent-Id", consentID)
-
-	resp, err := c.doWithRetry(req)
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:  http.MethodGet,
+		Path:    "/accounts/" + accountID,
+		Headers: headers,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get account failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get account failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
 	var account AccountDetail
-	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := ParseJSONResponse(resp, &account); err != nil {
+		return nil, fmt.Errorf("parse account response: %w", err)
 	}
 
 	return &account, nil
 }
 
+// ============================================================================
+// BALANCES
+// ============================================================================
+
 // GetBalances получает балансы счета
-func (c *VBankClient) GetBalances(ctx context.Context, consentID, accountID string) ([]BalanceDetail, error) {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) GetBalances(ctx context.Context, consentID, accountID string) ([]BalanceDetail, error) {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ensure token: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/accounts/"+accountID+"/balances", nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
+		"X-Consent-Id":      consentID,
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-	req.Header.Set("X-Consent-Id", consentID)
-
-	resp, err := c.doWithRetry(req)
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:  http.MethodGet,
+		Path:    "/accounts/" + accountID + "/balances",
+		Headers: headers,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get balances: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get balances failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get balances failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
+	return c.parseBalancesResponse(resp)
+}
+
+// parseBalancesResponse парсит разные форматы ответа с балансами
+func (c *BankAPIClient) parseBalancesResponse(resp *http.Response) ([]BalanceDetail, error) {
+	defer resp.Body.Close()
+	
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	var balances []BalanceDetail
-	
 	// Вариант 1: массив напрямую
-	if err := json.Unmarshal(bodyBytes, &balances); err == nil {
-		return balances, nil
+	var directArray []BalanceDetail
+	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
+		return directArray, nil
 	}
 
-	// Вариант 2: объект с полем "balances"
-	var wrapper struct {
-		Balances []BalanceDetail `json:"balances"`
-		Data     struct {
-			Balance []BalanceDetail `json:"balance"`
-		} `json:"data"`
-	}
+	// Вариант 2: обертка с полем "balances" (множественное число!)
+	var wrapper BalancesWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Balances) > 0 {
 			return wrapper.Balances, nil
 		}
-		if len(wrapper.Data.Balance) > 0 {
-			return wrapper.Data.Balance, nil
+		if len(wrapper.Data.Balances) > 0 {
+			return wrapper.Data.Balances, nil
 		}
 	}
 
-	return nil, fmt.Errorf("failed to parse balances response")
+	return []BalanceDetail{}, nil
 }
 
+// ============================================================================
+// TRANSACTIONS
+// ============================================================================
+
 // GetTransactions получает транзакции счета за период
-func (c *VBankClient) GetTransactions(ctx context.Context, consentID, accountID string, from, to time.Time) ([]TransactionDetail, error) {
-	token, err := c.ensureBankToken(ctx)
+func (c *BankAPIClient) GetTransactions(ctx context.Context, consentID, accountID string, from, to time.Time) ([]TransactionDetail, error) {
+	token, err := c.EnsureToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ensure token: %w", err)
 	}
 
-	// Формируем URL с query параметрами
-	url := c.baseURL + "/accounts/" + accountID + "/transactions"
-	if !from.IsZero() || !to.IsZero() {
-		url += "?"
-		if !from.IsZero() {
-			url += "from_date=" + from.Format("2006-01-02")
-		}
-		if !to.IsZero() {
-			if !from.IsZero() {
-				url += "&"
-			}
-			url += "to_date=" + to.Format("2006-01-02")
-		}
+	headers := map[string]string{
+		"Authorization":     "Bearer " + token,
+		"X-Requesting-Bank": c.requestingBank,
+		"X-Consent-Id":      consentID,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	// ✅ ИСПОЛЬЗУЕМ url.Values для безопасного построения query
+	queryParams := url.Values{}
+	if !from.IsZero() {
+		queryParams.Set("from_date", from.Format("2006-01-02"))
+	}
+	if !to.IsZero() {
+		queryParams.Set("to_date", to.Format("2006-01-02"))
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Requesting-Bank", c.requestingBank)
-	req.Header.Set("X-Consent-Id", consentID)
-
-	resp, err := c.doWithRetry(req)
+	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
+		Method:      http.MethodGet,
+		Path:        "/accounts/" + accountID + "/transactions",
+		Headers:     headers,
+		QueryParams: queryParams,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get transactions: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get transactions failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get transactions failed (%d): %s", resp.StatusCode, ReadErrorResponse(resp))
 	}
 
+	return c.parseTransactionsResponse(resp)
+}
+
+// parseTransactionsResponse парсит разные форматы ответа с транзакциями
+func (c *BankAPIClient) parseTransactionsResponse(resp *http.Response) ([]TransactionDetail, error) {
+	defer resp.Body.Close()
+	
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	var transactions []TransactionDetail
-	
 	// Вариант 1: массив напрямую
-	if err := json.Unmarshal(bodyBytes, &transactions); err == nil {
-		return transactions, nil
+	var directArray []TransactionDetail
+	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
+		return directArray, nil
 	}
 
-	// Вариант 2: объект с полем "transactions"
-	var wrapper struct {
-		Transactions []TransactionDetail `json:"transactions"`
-		Data         struct {
-			Transaction []TransactionDetail `json:"transaction"`
-		} `json:"data"`
-	}
+	// Вариант 2: обертка с полем "transactions" (множественное число!)
+	var wrapper TransactionsWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Transactions) > 0 {
 			return wrapper.Transactions, nil
 		}
-		if len(wrapper.Data.Transaction) > 0 {
-			return wrapper.Data.Transaction, nil
+		if len(wrapper.Data.Transactions) > 0 {
+			return wrapper.Data.Transactions, nil
 		}
 	}
 
-	return nil, fmt.Errorf("failed to parse transactions response")
-}
-
-// doWithRetry выполняет HTTP запрос с retry логикой на 5xx ошибки
-func (c *VBankClient) doWithRetry(req *http.Request) (*http.Response, error) {
-	var resp *http.Response
-	var err error
-
-	for attempt := 0; attempt < 3; attempt++ {
-		// Клонируем запрос для повторных попыток
-		reqClone := req.Clone(req.Context())
-		
-		resp, err = c.httpc.Do(reqClone)
-		if err != nil {
-			if attempt == 2 {
-				return nil, fmt.Errorf("request failed after 3 attempts: %w", err)
-			}
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
-		}
-
-		// Retry на 5xx ошибки
-		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-			resp.Body.Close()
-			if attempt == 2 {
-				return nil, fmt.Errorf("server returned 5xx after 3 attempts: %d", resp.StatusCode)
-			}
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-			continue
-		}
-
-		// Успешный ответ или 4xx ошибка (не retry)
-		return resp, nil
-	}
-
-	return resp, err
+	return []TransactionDetail{}, nil
 }
