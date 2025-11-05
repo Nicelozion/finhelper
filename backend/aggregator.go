@@ -1,0 +1,333 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+)
+
+// BankAggregator агрегирует данные из нескольких банков
+type BankAggregator struct {
+	config  Config
+	clients map[string]*BankAPIClient
+
+	// Кэш consent ID для каждого банка и пользователя
+	mu           sync.RWMutex
+	consentCache map[string]string // key: "bank|userID" -> consentID
+}
+
+// NewBankAggregator создает новый агрегатор банков
+func NewBankAggregator(config Config) *BankAggregator {
+	agg := &BankAggregator{
+		config:       config,
+		clients:      make(map[string]*BankAPIClient),
+		consentCache: make(map[string]string),
+	}
+
+	// Создаем клиентов для каждого банка
+	for _, bank := range config.Banks {
+		agg.clients[bank.Code] = NewBankAPIClient(
+			bank.BaseURL,
+			config.TeamID,
+			config.ClientSecret,
+			config.TeamID,
+		)
+		log.Printf("Initialized client for bank: %s (%s)", bank.Code, bank.BaseURL)
+	}
+
+	return agg
+}
+
+// ============================================================================
+// CONSENT MANAGEMENT
+// ============================================================================
+
+// EnsureConsent создает consent если его нет, или возвращает существующий
+func (a *BankAggregator) EnsureConsent(ctx context.Context, bankCode, userID string) (string, error) {
+	cacheKey := bankCode + "|" + userID
+
+	// Проверяем кэш
+	a.mu.RLock()
+	if consentID, exists := a.consentCache[cacheKey]; exists {
+		a.mu.RUnlock()
+		return consentID, nil
+	}
+	a.mu.RUnlock()
+
+	// Получаем клиент банка
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return "", err
+	}
+
+	// Создаем consent
+	permissions := []string{
+		"ReadAccountsDetail",
+		"ReadBalances",
+		"ReadTransactionsDetail",
+	}
+
+	consent, err := client.CreateConsent(ctx, userID, permissions, "FinHelper aggregation service")
+	if err != nil {
+		return "", fmt.Errorf("create consent for %s: %w", bankCode, err)
+	}
+
+	if consent.ConsentID == "" {
+		return "", fmt.Errorf("empty consent_id for bank %s", bankCode)
+	}
+
+	// Сохраняем в кэш
+	a.mu.Lock()
+	a.consentCache[cacheKey] = consent.ConsentID
+	a.mu.Unlock()
+
+	log.Printf("Created consent for bank=%s user=%s: %s", bankCode, userID, consent.ConsentID)
+	return consent.ConsentID, nil
+}
+
+// GetConsentStatus получает статус согласия
+func (a *BankAggregator) GetConsentStatus(ctx context.Context, bankCode, consentID string) (*ConsentResponse, error) {
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetConsentStatus(ctx, consentID)
+}
+
+// RevokeConsent отзывает согласие
+func (a *BankAggregator) RevokeConsent(ctx context.Context, bankCode, consentID string) error {
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return err
+	}
+
+	// Удаляем из кэша
+	a.mu.Lock()
+	for key, id := range a.consentCache {
+		if id == consentID {
+			delete(a.consentCache, key)
+			break
+		}
+	}
+	a.mu.Unlock()
+
+	return client.RevokeConsent(ctx, consentID)
+}
+
+// ============================================================================
+// ACCOUNTS
+// ============================================================================
+
+// GetAccountsFromAllBanks получает счета из всех банков
+func (a *BankAggregator) GetAccountsFromAllBanks(ctx context.Context, userID string) ([]Account, error) {
+	var allAccounts []Account
+
+	for _, bank := range a.config.Banks {
+		accounts, err := a.GetAccountsFromBank(ctx, bank.Code, userID)
+		if err != nil {
+			log.Printf("Warning: failed to get accounts from %s: %v", bank.Code, err)
+			continue // продолжаем с другими банками
+		}
+		allAccounts = append(allAccounts, accounts...)
+	}
+
+	log.Printf("Aggregated %d accounts from %d banks for user %s", len(allAccounts), len(a.config.Banks), userID)
+	return allAccounts, nil
+}
+
+// GetAccountsFromBank получает счета из конкретного банка
+func (a *BankAggregator) GetAccountsFromBank(ctx context.Context, bankCode, userID string) ([]Account, error) {
+	// Получаем или создаем consent
+	consentID, err := a.EnsureConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure consent: %w", err)
+	}
+
+	// Получаем клиент
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Получаем счета
+	accountDetails, err := client.GetAccounts(ctx, consentID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get accounts from %s: %w", bankCode, err)
+	}
+
+	// Конвертируем в legacy формат
+	var accounts []Account
+	for _, detail := range accountDetails {
+		accounts = append(accounts, detail.ToLegacyAccount(bankCode))
+	}
+
+	log.Printf("Fetched %d accounts from bank %s for user %s", len(accounts), bankCode, userID)
+	return accounts, nil
+}
+
+// GetAccountBalances получает балансы для конкретного счета
+func (a *BankAggregator) GetAccountBalances(ctx context.Context, bankCode, userID, accountID string) ([]BalanceDetail, error) {
+	consentID, err := a.EnsureConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure consent: %w", err)
+	}
+
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetBalances(ctx, consentID, accountID)
+}
+
+// ============================================================================
+// TRANSACTIONS
+// ============================================================================
+
+// GetTransactions получает транзакции из одного или всех банков
+func (a *BankAggregator) GetTransactions(ctx context.Context, userID, bankFilter string, from, to *time.Time) ([]Transaction, error) {
+	// Определяем список банков для запроса
+	banks := a.config.Banks
+	if bankFilter != "" && bankFilter != "all" {
+		found := false
+		for _, b := range a.config.Banks {
+			if b.Code == bankFilter {
+				banks = []Bank{b}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("unknown bank: %s", bankFilter)
+		}
+	}
+
+	var allTransactions []Transaction
+
+	// Получаем транзакции из каждого банка
+	for _, bank := range banks {
+		txs, err := a.getTransactionsFromBank(ctx, bank.Code, userID, from, to)
+		if err != nil {
+			log.Printf("Warning: failed to get transactions from %s: %v", bank.Code, err)
+			continue
+		}
+		allTransactions = append(allTransactions, txs...)
+	}
+
+	// Дополнительная фильтрация по датам (на клиенте)
+	if from != nil || to != nil {
+		filtered := make([]Transaction, 0)
+		for _, tx := range allTransactions {
+			if from != nil && tx.Date.Before(*from) {
+				continue
+			}
+			if to != nil && tx.Date.After(*to) {
+				continue
+			}
+			filtered = append(filtered, tx)
+		}
+		allTransactions = filtered
+	}
+
+	log.Printf("Aggregated %d transactions from %d banks for user %s", len(allTransactions), len(banks), userID)
+	return allTransactions, nil
+}
+
+// getTransactionsFromBank получает транзакции из конкретного банка
+func (a *BankAggregator) getTransactionsFromBank(ctx context.Context, bankCode, userID string, from, to *time.Time) ([]Transaction, error) {
+	// Получаем consent
+	consentID, err := a.EnsureConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure consent: %w", err)
+	}
+
+	// Получаем клиент
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Сначала получаем список счетов
+	accounts, err := client.GetAccounts(ctx, consentID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get accounts: %w", err)
+	}
+
+	var allTransactions []Transaction
+
+	// Для каждого счета получаем транзакции
+	for _, account := range accounts {
+		var fromTime, toTime time.Time
+		if from != nil {
+			fromTime = *from
+		}
+		if to != nil {
+			toTime = *to
+		}
+
+		txDetails, err := client.GetTransactions(ctx, consentID, account.AccountID, fromTime, toTime)
+		if err != nil {
+			log.Printf("Warning: failed to get transactions for account %s: %v", account.AccountID, err)
+			continue
+		}
+
+		// Конвертируем в legacy формат
+		for _, detail := range txDetails {
+			allTransactions = append(allTransactions, detail.ToLegacyTransaction(bankCode))
+		}
+	}
+
+	return allTransactions, nil
+}
+
+// GetAccountTransactions получает транзакции конкретного счета
+func (a *BankAggregator) GetAccountTransactions(ctx context.Context, bankCode, userID, accountID string, from, to time.Time) ([]Transaction, error) {
+	consentID, err := a.EnsureConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure consent: %w", err)
+	}
+
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	txDetails, err := client.GetTransactions(ctx, consentID, accountID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("get transactions: %w", err)
+	}
+
+	// Конвертируем в legacy формат
+	var transactions []Transaction
+	for _, detail := range txDetails {
+		transactions = append(transactions, detail.ToLegacyTransaction(bankCode))
+	}
+
+	return transactions, nil
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+// getClient возвращает клиент для указанного банка
+func (a *BankAggregator) getClient(bankCode string) (*BankAPIClient, error) {
+	client, exists := a.clients[bankCode]
+	if !exists {
+		return nil, fmt.Errorf("unknown bank: %s", bankCode)
+	}
+	return client, nil
+}
+
+// GetBankByCode находит конфигурацию банка по коду
+func (a *BankAggregator) GetBankByCode(code string) (Bank, error) {
+	for _, bank := range a.config.Banks {
+		if bank.Code == code {
+			return bank, nil
+		}
+	}
+	return Bank{}, fmt.Errorf("unknown bank: %s", code)
+}

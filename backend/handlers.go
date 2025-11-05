@@ -1,223 +1,236 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 )
 
+// Server обрабатывает HTTP запросы
 type Server struct {
-	cfg Config
-	bc  *BankClient
+	aggregator *BankAggregator
+	config     Config
 }
 
-func NewServer(cfg Config) *Server {
+// NewServer создает новый HTTP сервер
+func NewServer(config Config) *Server {
 	return &Server{
-		cfg: cfg,
-		bc:  NewBankClient(cfg),
+		aggregator: NewBankAggregator(config),
+		config:     config,
 	}
 }
 
-// health проверка здоровья сервиса
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]string{"status": "ok"})
+// ============================================================================
+// HEALTH CHECK
+// ============================================================================
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":    "ok",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"banks":     len(s.config.Banks),
+	})
 }
 
-// createConsent создает согласие на доступ к данным клиента
+// ============================================================================
+// CONSENT ENDPOINTS
+// ============================================================================
+
+// handleCreateConsent создает согласие на доступ к данным
 // POST /api/consents?bank=vbank&user=user-123
-func (s *Server) createConsent(w http.ResponseWriter, r *http.Request) {
-	bank := r.URL.Query().Get("bank")
-	if bank == "" {
-		writeErr(w, r, 400, "Missing 'bank' query parameter")
+func (s *Server) handleCreateConsent(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
 		return
 	}
 
-	user := r.URL.Query().Get("user")
-	if user == "" {
-		user = "demo-user-1"
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1" // default для тестирования
 	}
 
-	// Проверяем, что банк существует
-	if _, err := s.bc.bankByCode(bank); err != nil {
-		writeErr(w, r, 400, "Invalid bank code: "+bank)
+	// Проверяем что банк существует
+	if _, err := s.aggregator.GetBankByCode(bankCode); err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid bank code: "+bankCode)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	// Создаем согласие
-	consentID, err := s.bc.EnsureConsent(ctx, bank, user)
+	// Создаем consent
+	consentID, err := s.aggregator.EnsureConsent(r.Context(), bankCode, userID)
 	if err != nil {
-		writeErr(w, r, 500, "Failed to create consent: "+err.Error())
+		log.Printf("[%s] Failed to create consent: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to create consent: "+err.Error())
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":         true,
-		"bank":       bank,
-		"user":       user,
+		"bank":       bankCode,
+		"user":       userID,
 		"consent_id": consentID,
 		"message":    "Consent created successfully",
 	})
 }
 
-// getConsentStatus получает статус согласия
+// handleGetConsentStatus получает статус согласия
 // GET /api/consents/{id}?bank=vbank
-func (s *Server) getConsentStatus(w http.ResponseWriter, r *http.Request) {
-	bank := r.URL.Query().Get("bank")
-	if bank == "" {
-		writeErr(w, r, 400, "Missing 'bank' query parameter")
-		return
-	}
-
+func (s *Server) handleGetConsentStatus(w http.ResponseWriter, r *http.Request) {
 	consentID := r.PathValue("id")
 	if consentID == "" {
-		writeErr(w, r, 400, "Missing consent ID in path")
+		writeError(w, r, http.StatusBadRequest, "Missing consent ID in path")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
 
-	consent, err := s.bc.GetConsentStatus(ctx, bank, consentID)
+	consent, err := s.aggregator.GetConsentStatus(r.Context(), bankCode, consentID)
 	if err != nil {
-		writeErr(w, r, 500, "Failed to get consent status: "+err.Error())
+		log.Printf("[%s] Failed to get consent status: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get consent status: "+err.Error())
 		return
 	}
 
-	writeJSON(w, 200, consent)
+	writeJSON(w, http.StatusOK, consent)
 }
 
-// revokeConsent отзывает согласие
+// handleRevokeConsent отзывает согласие
 // DELETE /api/consents/{id}?bank=vbank
-func (s *Server) revokeConsent(w http.ResponseWriter, r *http.Request) {
-	bank := r.URL.Query().Get("bank")
-	if bank == "" {
-		writeErr(w, r, 400, "Missing 'bank' query parameter")
-		return
-	}
-
+func (s *Server) handleRevokeConsent(w http.ResponseWriter, r *http.Request) {
 	consentID := r.PathValue("id")
 	if consentID == "" {
-		writeErr(w, r, 400, "Missing consent ID in path")
+		writeError(w, r, http.StatusBadRequest, "Missing consent ID in path")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	if err := s.bc.RevokeConsent(ctx, bank, consentID); err != nil {
-		writeErr(w, r, 500, "Failed to revoke consent: "+err.Error())
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	if err := s.aggregator.RevokeConsent(r.Context(), bankCode, consentID); err != nil {
+		log.Printf("[%s] Failed to revoke consent: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to revoke consent: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "Consent revoked successfully",
 	})
 }
 
-// connectBank подключает банк (legacy endpoint для обратной совместимости)
+// ============================================================================
+// LEGACY BANK CONNECTION ENDPOINT (обратная совместимость)
+// ============================================================================
+
+// handleConnectBank legacy endpoint для подключения банка
 // POST /api/banks/{bank}/connect?user=user-123
-func (s *Server) connectBank(w http.ResponseWriter, r *http.Request) {
-	bank := r.PathValue("bank")
-	switch bank {
-	case "vbank", "abank", "sbank":
-	default:
-		writeErr(w, r, 400, "Invalid bank. Allowed: vbank, abank, sbank")
+func (s *Server) handleConnectBank(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.PathValue("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing bank code in path")
 		return
 	}
 
-	user := r.URL.Query().Get("user")
-	if user == "" {
-		user = "demo-user-1"
-	}
-
-	if _, err := s.bc.bankByCode(bank); err != nil {
-		writeErr(w, r, 400, err.Error())
+	// Валидация банка
+	validBanks := map[string]bool{"vbank": true, "abank": true, "sbank": true}
+	if !validBanks[bankCode] {
+		writeError(w, r, http.StatusBadRequest, "Invalid bank. Allowed: vbank, abank, sbank")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
 
-	consentID, err := s.bc.EnsureConsent(ctx, bank, user)
+	// Создаем consent
+	consentID, err := s.aggregator.EnsureConsent(r.Context(), bankCode, userID)
 	if err != nil {
-		writeErr(w, r, 500, "Failed to connect: "+err.Error())
+		log.Printf("[%s] Failed to connect bank: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to connect: "+err.Error())
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":         true,
-		"bank":       bank,
+		"bank":       bankCode,
 		"consent_id": consentID,
+		"user":       userID,
+		"message":    "Bank connected successfully",
 	})
 }
 
-// accounts получает список всех счетов пользователя
+// ============================================================================
+// ACCOUNT ENDPOINTS
+// ============================================================================
+
+// handleGetAccounts получает счета пользователя
 // GET /api/accounts?user=user-123&bank=vbank
-func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("user")
-	if user == "" {
-		user = "demo-user-1"
+func (s *Server) handleGetAccounts(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
 	}
 
 	bankFilter := r.URL.Query().Get("bank")
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	var accs []Account
+	var accounts []Account
 	var err error
 
 	if bankFilter != "" && bankFilter != "all" {
-		// Получаем счета из конкретного банка
-		accs, err = s.bc.FetchAccountsFromBank(ctx, bankFilter, user)
+		// Счета из конкретного банка
+		accounts, err = s.aggregator.GetAccountsFromBank(r.Context(), bankFilter, userID)
 	} else {
-		// Получаем счета из всех банков
-		accs, err = s.bc.FetchAccountsAllBanks(ctx, user)
+		// Счета из всех банков
+		accounts, err = s.aggregator.GetAccountsFromAllBanks(r.Context(), userID)
 	}
 
 	if err != nil {
-		writeErr(w, r, 500, "Failed to fetch accounts: "+err.Error())
+		log.Printf("[%s] Failed to fetch accounts: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to fetch accounts: "+err.Error())
 		return
 	}
 
-	if accs == nil {
-		accs = []Account{}
+	// Возвращаем пустой массив вместо null
+	if accounts == nil {
+		accounts = []Account{}
 	}
 
-	writeJSON(w, 200, accs)
+	writeJSON(w, http.StatusOK, accounts)
 }
 
-// accountBalances получает балансы конкретного счета
+// handleGetAccountBalances получает балансы счета
 // GET /api/accounts/{id}/balances?bank=vbank&user=user-123
-func (s *Server) accountBalances(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetAccountBalances(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("id")
 	if accountID == "" {
-		writeErr(w, r, 400, "Missing account ID in path")
+		writeError(w, r, http.StatusBadRequest, "Missing account ID in path")
 		return
 	}
 
-	bank := r.URL.Query().Get("bank")
-	if bank == "" {
-		writeErr(w, r, 400, "Missing 'bank' query parameter")
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
 		return
 	}
 
-	user := r.URL.Query().Get("user")
-	if user == "" {
-		user = "demo-user-1"
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	balances, err := s.bc.FetchBalances(ctx, bank, user, accountID)
+	balances, err := s.aggregator.GetAccountBalances(r.Context(), bankCode, userID, accountID)
 	if err != nil {
-		writeErr(w, r, 500, "Failed to fetch balances: "+err.Error())
+		log.Printf("[%s] Failed to fetch balances: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to fetch balances: "+err.Error())
 		return
 	}
 
@@ -225,97 +238,27 @@ func (s *Server) accountBalances(w http.ResponseWriter, r *http.Request) {
 		balances = []BalanceDetail{}
 	}
 
-	writeJSON(w, 200, balances)
+	writeJSON(w, http.StatusOK, balances)
 }
 
-// transactions получает транзакции
-// GET /api/transactions?user=user-123&bank=vbank&from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z
-func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("user")
-	if user == "" {
-		user = "demo-user-1"
-	}
-
-	bank := r.URL.Query().Get("bank")
-
-	var fromPtr, toPtr *time.Time
-	if v := r.URL.Query().Get("from"); v != "" {
-		t, e := time.Parse(time.RFC3339, v)
-		if e != nil {
-			writeErr(w, r, 400, "Invalid 'from' (RFC3339)")
-			return
-		}
-		fromPtr = &t
-	}
-	if v := r.URL.Query().Get("to"); v != "" {
-		t, e := time.Parse(time.RFC3339, v)
-		if e != nil {
-			writeErr(w, r, 400, "Invalid 'to' (RFC3339)")
-			return
-		}
-		toPtr = &t
-	}
-
-	if bank != "" && bank != "all" {
-		// Проверяем валидность банка
-		valid := false
-		for _, b := range s.cfg.Banks {
-			if b.Code == bank {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			writeErr(w, r, 400, "Invalid bank")
-			return
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-
-	txs, err := s.bc.FetchTransactions(ctx, user, bank, fromPtr, toPtr)
-	if err != nil {
-		writeErr(w, r, 500, "Failed to fetch transactions: "+err.Error())
-		return
-	}
-
-	// Форматируем ответ
-	resp := make([]map[string]interface{}, len(txs))
-	for i, t := range txs {
-		resp[i] = map[string]interface{}{
-			"id":          t.ID,
-			"date":        t.Date.Format(time.RFC3339),
-			"amount":      t.Amount,
-			"currency":    t.Currency,
-			"merchant":    t.Merchant,
-			"category":    t.Category,
-			"description": t.Description,
-			"bank":        t.Bank,
-		}
-	}
-
-	writeJSON(w, 200, resp)
-}
-
-// accountTransactions получает транзакции конкретного счета
+// handleGetAccountTransactions получает транзакции конкретного счета
 // GET /api/accounts/{id}/transactions?bank=vbank&user=user-123&from=2025-01-01&to=2025-12-31
-func (s *Server) accountTransactions(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetAccountTransactions(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("id")
 	if accountID == "" {
-		writeErr(w, r, 400, "Missing account ID in path")
+		writeError(w, r, http.StatusBadRequest, "Missing account ID in path")
 		return
 	}
 
-	bank := r.URL.Query().Get("bank")
-	if bank == "" {
-		writeErr(w, r, 400, "Missing 'bank' query parameter")
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
 		return
 	}
 
-	user := r.URL.Query().Get("user")
-	if user == "" {
-		user = "demo-user-1"
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
 	}
 
 	// Парсим даты
@@ -323,7 +266,7 @@ func (s *Server) accountTransactions(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("from"); v != "" {
 		t, err := time.Parse("2006-01-02", v)
 		if err != nil {
-			writeErr(w, r, 400, "Invalid 'from' date format (use YYYY-MM-DD)")
+			writeError(w, r, http.StatusBadRequest, "Invalid 'from' date format (use YYYY-MM-DD)")
 			return
 		}
 		fromTime = t
@@ -331,66 +274,120 @@ func (s *Server) accountTransactions(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("to"); v != "" {
 		t, err := time.Parse("2006-01-02", v)
 		if err != nil {
-			writeErr(w, r, 400, "Invalid 'to' date format (use YYYY-MM-DD)")
+			writeError(w, r, http.StatusBadRequest, "Invalid 'to' date format (use YYYY-MM-DD)")
 			return
 		}
 		toTime = t
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	// Получаем согласие
-	consentID, err := s.bc.EnsureConsent(ctx, bank, user)
+	transactions, err := s.aggregator.GetAccountTransactions(r.Context(), bankCode, userID, accountID, fromTime, toTime)
 	if err != nil {
-		writeErr(w, r, 500, "Failed to ensure consent: "+err.Error())
+		log.Printf("[%s] Failed to fetch account transactions: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to fetch transactions: "+err.Error())
 		return
 	}
 
-	// Получаем клиент
-	client, err := s.bc.getClient(bank)
-	if err != nil {
-		writeErr(w, r, 500, "Failed to get bank client: "+err.Error())
-		return
+	// Форматируем ответ
+	response := formatTransactionsResponse(transactions)
+	writeJSON(w, http.StatusOK, response)
+}
+
+// ============================================================================
+// TRANSACTION ENDPOINTS
+// ============================================================================
+
+// handleGetTransactions получает транзакции со всех счетов или из конкретного банка
+// GET /api/transactions?user=user-123&bank=vbank&from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z
+func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
 	}
 
-	// Получаем транзакции
-	transactions, err := client.GetTransactions(ctx, consentID, accountID, fromTime, toTime)
-	if err != nil {
-		writeErr(w, r, 500, "Failed to fetch transactions: "+err.Error())
-		return
+	bankFilter := r.URL.Query().Get("bank")
+
+	// Парсим даты в формате RFC3339
+	var fromPtr, toPtr *time.Time
+	if v := r.URL.Query().Get("from"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "Invalid 'from' date format (use RFC3339)")
+			return
+		}
+		fromPtr = &t
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "Invalid 'to' date format (use RFC3339)")
+			return
+		}
+		toPtr = &t
 	}
 
-	// Конвертируем в legacy формат для ответа
-	resp := make([]map[string]interface{}, len(transactions))
-	for i, tx := range transactions {
-		legacyTx := tx.ToLegacyTransaction(bank)
-		resp[i] = map[string]interface{}{
-			"id":          legacyTx.ID,
-			"date":        legacyTx.Date.Format(time.RFC3339),
-			"amount":      legacyTx.Amount,
-			"currency":    legacyTx.Currency,
-			"merchant":    legacyTx.Merchant,
-			"category":    legacyTx.Category,
-			"description": legacyTx.Description,
-			"bank":        legacyTx.Bank,
+	// Валидация банка
+	if bankFilter != "" && bankFilter != "all" {
+		if _, err := s.aggregator.GetBankByCode(bankFilter); err != nil {
+			writeError(w, r, http.StatusBadRequest, "Invalid bank code: "+bankFilter)
+			return
 		}
 	}
 
-	writeJSON(w, 200, resp)
+	transactions, err := s.aggregator.GetTransactions(r.Context(), userID, bankFilter, fromPtr, toPtr)
+	if err != nil {
+		log.Printf("[%s] Failed to fetch transactions: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to fetch transactions: "+err.Error())
+		return
+	}
+
+	// Форматируем ответ
+	response := formatTransactionsResponse(transactions)
+	writeJSON(w, http.StatusOK, response)
 }
 
-// writeJSON пишет JSON ответ
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// writeJSON отправляет JSON ответ
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Failed to encode JSON response: %v", err)
+	}
 }
 
-// writeErr пишет ошибку в формате JSON
-func writeErr(w http.ResponseWriter, r *http.Request, status int, msg string) {
-	writeJSON(w, status, ErrorResponse{
-		Message: msg,
-		Error:   http.StatusText(status),
-	})
+// writeError отправляет ошибку в JSON формате
+func writeError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	requestID := getRequestID(r.Context())
+	
+	response := ErrorResponse{
+		Error:     http.StatusText(status),
+		Message:   message,
+		RequestID: requestID,
+	}
+	
+	writeJSON(w, status, response)
+}
+
+// formatTransactionsResponse форматирует транзакции для ответа
+func formatTransactionsResponse(transactions []Transaction) []map[string]interface{} {
+	response := make([]map[string]interface{}, len(transactions))
+	
+	for i, tx := range transactions {
+		response[i] = map[string]interface{}{
+			"id":          tx.ID,
+			"date":        tx.Date.Format(time.RFC3339),
+			"amount":      tx.Amount,
+			"currency":    tx.Currency,
+			"merchant":    tx.Merchant,
+			"category":    tx.Category,
+			"description": tx.Description,
+			"bank":        tx.Bank,
+		}
+	}
+	
+	return response
 }
