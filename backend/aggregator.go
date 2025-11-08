@@ -14,16 +14,20 @@ type BankAggregator struct {
 	clients map[string]*BankAPIClient
 
 	// Кэш consent ID для каждого банка и пользователя
-	mu           sync.RWMutex
-	consentCache map[string]string // key: "bank|userID" -> consentID
+	mu                     sync.RWMutex
+	consentCache           map[string]string // key: "bank|userID" -> consentID (account consent)
+	paymentConsentCache    map[string]string // key: "bank|userID" -> payment consent ID
+	paConsentCache         map[string]string // key: "bank|userID" -> PA consent ID
 }
 
 // NewBankAggregator создает новый агрегатор банков
 func NewBankAggregator(config Config) *BankAggregator {
 	agg := &BankAggregator{
-		config:       config,
-		clients:      make(map[string]*BankAPIClient),
-		consentCache: make(map[string]string),
+		config:              config,
+		clients:             make(map[string]*BankAPIClient),
+		consentCache:        make(map[string]string),
+		paymentConsentCache: make(map[string]string),
+		paConsentCache:      make(map[string]string),
 	}
 
 	// Создаем клиентов для каждого банка
@@ -180,7 +184,7 @@ func (a *BankAggregator) GetAccountBalances(ctx context.Context, bankCode, userI
 		return nil, err
 	}
 
-	return client.GetBalances(ctx, consentID, accountID)
+	return client.GetBalances(ctx, consentID, accountID, userID)
 }
 
 // ============================================================================
@@ -268,7 +272,7 @@ func (a *BankAggregator) getTransactionsFromBank(ctx context.Context, bankCode, 
 			toTime = *to
 		}
 
-		txDetails, err := client.GetTransactions(ctx, consentID, account.AccountID, fromTime, toTime)
+		txDetails, err := client.GetTransactions(ctx, consentID, account.AccountID, userID, fromTime, toTime)
 		if err != nil {
 			log.Printf("Warning: failed to get transactions for account %s: %v", account.AccountID, err)
 			continue
@@ -295,7 +299,7 @@ func (a *BankAggregator) GetAccountTransactions(ctx context.Context, bankCode, u
 		return nil, err
 	}
 
-	txDetails, err := client.GetTransactions(ctx, consentID, accountID, from, to)
+	txDetails, err := client.GetTransactions(ctx, consentID, accountID, userID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("get transactions: %w", err)
 	}
@@ -330,4 +334,279 @@ func (a *BankAggregator) GetBankByCode(code string) (Bank, error) {
 		}
 	}
 	return Bank{}, fmt.Errorf("unknown bank: %s", code)
+}
+
+// ============================================================================
+// PAYMENT CONSENT MANAGEMENT
+// ============================================================================
+
+// EnsurePaymentConsent создает payment consent если его нет, или возвращает существующий
+func (a *BankAggregator) EnsurePaymentConsent(ctx context.Context, bankCode, userID string, paymentInfo PaymentInfo) (string, error) {
+	cacheKey := bankCode + "|" + userID
+
+	// Проверяем кэш
+	a.mu.RLock()
+	if consentID, exists := a.paymentConsentCache[cacheKey]; exists {
+		a.mu.RUnlock()
+		return consentID, nil
+	}
+	a.mu.RUnlock()
+
+	// Получаем клиент банка
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return "", err
+	}
+
+	// Создаем payment consent
+	req := PaymentConsentRequest{
+		RequestingBank: a.config.TeamID,
+		ClientID:       userID,
+		PaymentDetails: paymentInfo,
+		Reason:         "FinHelper payment service",
+		AutoApproved:   true,
+	}
+
+	consent, err := client.CreatePaymentConsent(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("create payment consent for %s: %w", bankCode, err)
+	}
+
+	if consent.ConsentID == "" {
+		return "", fmt.Errorf("empty payment consent_id for bank %s", bankCode)
+	}
+
+	// Сохраняем в кэш
+	a.mu.Lock()
+	a.paymentConsentCache[cacheKey] = consent.ConsentID
+	a.mu.Unlock()
+
+	log.Printf("Created payment consent for bank=%s user=%s: %s", bankCode, userID, consent.ConsentID)
+	return consent.ConsentID, nil
+}
+
+// GetPaymentConsentStatus получает статус payment consent
+func (a *BankAggregator) GetPaymentConsentStatus(ctx context.Context, bankCode, consentID string) (*PaymentConsentResponse, error) {
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetPaymentConsentStatus(ctx, consentID)
+}
+
+// ============================================================================
+// PAYMENTS
+// ============================================================================
+
+// CreatePayment создает платеж в указанном банке
+func (a *BankAggregator) CreatePayment(ctx context.Context, bankCode, userID string, req PaymentRequest) (*PaymentResponse, error) {
+	// Создаем payment consent
+	paymentInfo := PaymentInfo{
+		DebtorAccount:   req.DebtorAccount,
+		CreditorAccount: req.CreditorAccount,
+		Amount:          req.Amount,
+		Reference:       req.Reference,
+	}
+
+	consentID, err := a.EnsurePaymentConsent(ctx, bankCode, userID, paymentInfo)
+	if err != nil {
+		return nil, fmt.Errorf("ensure payment consent: %w", err)
+	}
+
+	// Получаем клиент
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Создаем платеж
+	payment, err := client.CreatePayment(ctx, consentID, userID, req)
+	if err != nil {
+		return nil, fmt.Errorf("create payment: %w", err)
+	}
+
+	log.Printf("Created payment %s for bank=%s user=%s", payment.PaymentID, bankCode, userID)
+	return payment, nil
+}
+
+// GetPaymentStatus получает статус платежа
+func (a *BankAggregator) GetPaymentStatus(ctx context.Context, bankCode, paymentID, userID string) (*PaymentResponse, error) {
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetPaymentStatus(ctx, paymentID, userID)
+}
+
+// ============================================================================
+// PRODUCT AGREEMENT CONSENT MANAGEMENT
+// ============================================================================
+
+// EnsureProductAgreementConsent создает PA consent если его нет, или возвращает существующий
+func (a *BankAggregator) EnsureProductAgreementConsent(ctx context.Context, bankCode, userID string) (string, error) {
+	cacheKey := bankCode + "|" + userID
+
+	// Проверяем кэш
+	a.mu.RLock()
+	if consentID, exists := a.paConsentCache[cacheKey]; exists {
+		a.mu.RUnlock()
+		return consentID, nil
+	}
+	a.mu.RUnlock()
+
+	// Получаем клиент банка
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return "", err
+	}
+
+	// Создаем PA consent
+	permissions := []string{
+		"ReadProducts",
+		"ReadAgreements",
+		"CreateAgreement",
+		"CloseAgreement",
+	}
+
+	req := ProductAgreementConsentRequest{
+		RequestingBank: a.config.TeamID,
+		ClientID:       userID,
+		Permissions:    permissions,
+		Reason:         "FinHelper product agreement service",
+		AutoApproved:   true,
+	}
+
+	consent, err := client.CreateProductAgreementConsent(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("create PA consent for %s: %w", bankCode, err)
+	}
+
+	if consent.ConsentID == "" {
+		return "", fmt.Errorf("empty PA consent_id for bank %s", bankCode)
+	}
+
+	// Сохраняем в кэш
+	a.mu.Lock()
+	a.paConsentCache[cacheKey] = consent.ConsentID
+	a.mu.Unlock()
+
+	log.Printf("Created PA consent for bank=%s user=%s: %s", bankCode, userID, consent.ConsentID)
+	return consent.ConsentID, nil
+}
+
+// GetProductAgreementConsentStatus получает статус PA consent
+func (a *BankAggregator) GetProductAgreementConsentStatus(ctx context.Context, bankCode, consentID string) (*ProductAgreementConsentResponse, error) {
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetProductAgreementConsentStatus(ctx, consentID)
+}
+
+// ============================================================================
+// PRODUCTS
+// ============================================================================
+
+// GetProducts получает список продуктов из банка
+func (a *BankAggregator) GetProducts(ctx context.Context, bankCode, userID, productType string) ([]Product, error) {
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	products, err := client.GetProducts(ctx, userID, productType)
+	if err != nil {
+		return nil, fmt.Errorf("get products from %s: %w", bankCode, err)
+	}
+
+	log.Printf("Fetched %d products from bank %s", len(products), bankCode)
+	return products, nil
+}
+
+// ============================================================================
+// AGREEMENTS
+// ============================================================================
+
+// OpenAgreement открывает договор (вклад/кредит/карта)
+func (a *BankAggregator) OpenAgreement(ctx context.Context, bankCode, userID string, req AgreementRequest) (*AgreementResponse, error) {
+	// Получаем или создаем PA consent
+	paConsentID, err := a.EnsureProductAgreementConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure PA consent: %w", err)
+	}
+
+	// Получаем клиент
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Открываем договор
+	agreement, err := client.OpenAgreement(ctx, paConsentID, userID, req)
+	if err != nil {
+		return nil, fmt.Errorf("open agreement: %w", err)
+	}
+
+	log.Printf("Opened agreement %s for bank=%s user=%s", agreement.AgreementID, bankCode, userID)
+	return agreement, nil
+}
+
+// GetAgreementDetails получает детали договора
+func (a *BankAggregator) GetAgreementDetails(ctx context.Context, bankCode, agreementID, userID string) (*AgreementResponse, error) {
+	paConsentID, err := a.EnsureProductAgreementConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure PA consent: %w", err)
+	}
+
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetAgreementDetails(ctx, paConsentID, agreementID, userID)
+}
+
+// CloseAgreement закрывает договор
+func (a *BankAggregator) CloseAgreement(ctx context.Context, bankCode, agreementID, userID string) (*AgreementResponse, error) {
+	paConsentID, err := a.EnsureProductAgreementConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure PA consent: %w", err)
+	}
+
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	agreement, err := client.CloseAgreement(ctx, paConsentID, agreementID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("close agreement: %w", err)
+	}
+
+	log.Printf("Closed agreement %s for bank=%s user=%s", agreementID, bankCode, userID)
+	return agreement, nil
+}
+
+// GetAgreements получает список договоров клиента
+func (a *BankAggregator) GetAgreements(ctx context.Context, bankCode, userID string) ([]AgreementResponse, error) {
+	paConsentID, err := a.EnsureProductAgreementConsent(ctx, bankCode, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure PA consent: %w", err)
+	}
+
+	client, err := a.getClient(bankCode)
+	if err != nil {
+		return nil, err
+	}
+
+	agreements, err := client.GetAgreements(ctx, paConsentID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get agreements from %s: %w", bankCode, err)
+	}
+
+	log.Printf("Fetched %d agreements from bank %s for user %s", len(agreements), bankCode, userID)
+	return agreements, nil
 }

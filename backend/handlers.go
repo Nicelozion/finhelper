@@ -346,6 +346,353 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
+// PAYMENT CONSENT ENDPOINTS
+// ============================================================================
+
+// handleCreatePaymentConsent создает согласие на платеж
+// POST /api/payment-consents?bank=vbank&user=user-123
+func (s *Server) handleCreatePaymentConsent(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	// Парсим тело запроса
+	var paymentInfo PaymentInfo
+	if err := json.NewDecoder(r.Body).Decode(&paymentInfo); err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	consentID, err := s.aggregator.EnsurePaymentConsent(r.Context(), bankCode, userID, paymentInfo)
+	if err != nil {
+		log.Printf("[%s] Failed to create payment consent: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to create payment consent: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":         true,
+		"bank":       bankCode,
+		"user":       userID,
+		"consent_id": consentID,
+		"message":    "Payment consent created successfully",
+	})
+}
+
+// handleGetPaymentConsentStatus получает статус payment consent
+// GET /api/payment-consents/{id}?bank=vbank
+func (s *Server) handleGetPaymentConsentStatus(w http.ResponseWriter, r *http.Request) {
+	consentID := r.PathValue("id")
+	if consentID == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing consent ID in path")
+		return
+	}
+
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	consent, err := s.aggregator.GetPaymentConsentStatus(r.Context(), bankCode, consentID)
+	if err != nil {
+		log.Printf("[%s] Failed to get payment consent status: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get payment consent status: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, consent)
+}
+
+// ============================================================================
+// PAYMENT ENDPOINTS
+// ============================================================================
+
+// handleCreatePayment создает платеж
+// POST /api/payments?bank=vbank&user=user-123
+func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	// Парсим тело запроса
+	var paymentReq PaymentRequest
+	if err := json.NewDecoder(r.Body).Decode(&paymentReq); err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	payment, err := s.aggregator.CreatePayment(r.Context(), bankCode, userID, paymentReq)
+	if err != nil {
+		log.Printf("[%s] Failed to create payment: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to create payment: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, payment)
+}
+
+// handleGetPaymentStatus получает статус платежа
+// GET /api/payments/{id}?bank=vbank&user=user-123
+func (s *Server) handleGetPaymentStatus(w http.ResponseWriter, r *http.Request) {
+	paymentID := r.PathValue("id")
+	if paymentID == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing payment ID in path")
+		return
+	}
+
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	payment, err := s.aggregator.GetPaymentStatus(r.Context(), bankCode, paymentID, userID)
+	if err != nil {
+		log.Printf("[%s] Failed to get payment status: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get payment status: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payment)
+}
+
+// ============================================================================
+// PRODUCT AGREEMENT CONSENT ENDPOINTS
+// ============================================================================
+
+// handleCreatePAConsent создает PA consent
+// POST /api/pa-consents?bank=vbank&user=user-123
+func (s *Server) handleCreatePAConsent(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	consentID, err := s.aggregator.EnsureProductAgreementConsent(r.Context(), bankCode, userID)
+	if err != nil {
+		log.Printf("[%s] Failed to create PA consent: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to create PA consent: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":         true,
+		"bank":       bankCode,
+		"user":       userID,
+		"consent_id": consentID,
+		"message":    "PA consent created successfully",
+	})
+}
+
+// handleGetPAConsentStatus получает статус PA consent
+// GET /api/pa-consents/{id}?bank=vbank
+func (s *Server) handleGetPAConsentStatus(w http.ResponseWriter, r *http.Request) {
+	consentID := r.PathValue("id")
+	if consentID == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing consent ID in path")
+		return
+	}
+
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	consent, err := s.aggregator.GetProductAgreementConsentStatus(r.Context(), bankCode, consentID)
+	if err != nil {
+		log.Printf("[%s] Failed to get PA consent status: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get PA consent status: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, consent)
+}
+
+// ============================================================================
+// PRODUCT ENDPOINTS
+// ============================================================================
+
+// handleGetProducts получает список продуктов
+// GET /api/products?bank=vbank&user=user-123&type=DEPOSIT
+func (s *Server) handleGetProducts(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	productType := r.URL.Query().Get("type")
+
+	products, err := s.aggregator.GetProducts(r.Context(), bankCode, userID, productType)
+	if err != nil {
+		log.Printf("[%s] Failed to get products: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get products: "+err.Error())
+		return
+	}
+
+	if products == nil {
+		products = []Product{}
+	}
+
+	writeJSON(w, http.StatusOK, products)
+}
+
+// ============================================================================
+// AGREEMENT ENDPOINTS
+// ============================================================================
+
+// handleOpenAgreement открывает договор
+// POST /api/agreements?bank=vbank&user=user-123
+func (s *Server) handleOpenAgreement(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	// Парсим тело запроса
+	var agreementReq AgreementRequest
+	if err := json.NewDecoder(r.Body).Decode(&agreementReq); err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	agreement, err := s.aggregator.OpenAgreement(r.Context(), bankCode, userID, agreementReq)
+	if err != nil {
+		log.Printf("[%s] Failed to open agreement: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to open agreement: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, agreement)
+}
+
+// handleGetAgreements получает список договоров
+// GET /api/agreements?bank=vbank&user=user-123
+func (s *Server) handleGetAgreements(w http.ResponseWriter, r *http.Request) {
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	agreements, err := s.aggregator.GetAgreements(r.Context(), bankCode, userID)
+	if err != nil {
+		log.Printf("[%s] Failed to get agreements: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get agreements: "+err.Error())
+		return
+	}
+
+	if agreements == nil {
+		agreements = []AgreementResponse{}
+	}
+
+	writeJSON(w, http.StatusOK, agreements)
+}
+
+// handleGetAgreementDetails получает детали договора
+// GET /api/agreements/{id}?bank=vbank&user=user-123
+func (s *Server) handleGetAgreementDetails(w http.ResponseWriter, r *http.Request) {
+	agreementID := r.PathValue("id")
+	if agreementID == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing agreement ID in path")
+		return
+	}
+
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	agreement, err := s.aggregator.GetAgreementDetails(r.Context(), bankCode, agreementID, userID)
+	if err != nil {
+		log.Printf("[%s] Failed to get agreement details: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to get agreement details: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agreement)
+}
+
+// handleCloseAgreement закрывает договор
+// DELETE /api/agreements/{id}?bank=vbank&user=user-123
+func (s *Server) handleCloseAgreement(w http.ResponseWriter, r *http.Request) {
+	agreementID := r.PathValue("id")
+	if agreementID == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing agreement ID in path")
+		return
+	}
+
+	bankCode := r.URL.Query().Get("bank")
+	if bankCode == "" {
+		writeError(w, r, http.StatusBadRequest, "Missing 'bank' query parameter")
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "demo-user-1"
+	}
+
+	agreement, err := s.aggregator.CloseAgreement(r.Context(), bankCode, agreementID, userID)
+	if err != nil {
+		log.Printf("[%s] Failed to close agreement: %v", getRequestID(r.Context()), err)
+		writeError(w, r, http.StatusInternalServerError, "Failed to close agreement: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agreement)
+}
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 

@@ -236,11 +236,171 @@ func parseAmount(s string) float64 {
 	if s == "" {
 		return 0
 	}
-	
+
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return 0
 	}
-	
+
 	return f
+}
+
+// ============================================================================
+// PAYMENT CONSENT MODELS
+// ============================================================================
+
+// PaymentConsentRequest запрос на создание согласия для платежа
+type PaymentConsentRequest struct {
+	RequestingBank string      `json:"requesting_bank"`
+	ClientID       string      `json:"client_id"`
+	PaymentDetails PaymentInfo `json:"payment_details"`
+	Reason         string      `json:"reason,omitempty"`
+	AutoApproved   bool        `json:"auto_approved"`
+}
+
+// PaymentInfo информация о платеже для consent
+type PaymentInfo struct {
+	DebtorAccount  AccountInfo `json:"debtor_account"`
+	CreditorAccount AccountInfo `json:"creditor_account"`
+	Amount         AmountObj   `json:"amount"`
+	Reference      string      `json:"reference,omitempty"`
+}
+
+// AccountInfo информация о счёте
+type AccountInfo struct {
+	SchemeName     string `json:"scheme_name"`
+	Identification string `json:"identification"`
+	Name           string `json:"name,omitempty"`
+}
+
+// PaymentConsentResponse ответ с информацией о payment consent
+type PaymentConsentResponse struct {
+	ConsentID      string      `json:"consent_id"`
+	Status         string      `json:"status"`
+	ClientID       string      `json:"client_id,omitempty"`
+	PaymentDetails PaymentInfo `json:"payment_details,omitempty"`
+	CreatedAt      time.Time   `json:"created_at,omitempty"`
+	UpdatedAt      time.Time   `json:"updated_at,omitempty"`
+	ExpirationDate time.Time   `json:"expiration_date,omitempty"`
+}
+
+// ============================================================================
+// PAYMENT MODELS
+// ============================================================================
+
+// PaymentRequest запрос на создание платежа
+type PaymentRequest struct {
+	DebtorAccount   AccountInfo `json:"debtor_account"`
+	CreditorAccount AccountInfo `json:"creditor_account"`
+	Amount          AmountObj   `json:"amount"`
+	Reference       string      `json:"reference,omitempty"`
+	RemittanceInfo  string      `json:"remittance_information,omitempty"`
+}
+
+// PaymentResponse ответ с информацией о платеже
+type PaymentResponse struct {
+	PaymentID       string      `json:"payment_id"`
+	Status          string      `json:"status"`
+	DebtorAccount   AccountInfo `json:"debtor_account,omitempty"`
+	CreditorAccount AccountInfo `json:"creditor_account,omitempty"`
+	Amount          AmountObj   `json:"amount,omitempty"`
+	Reference       string      `json:"reference,omitempty"`
+	CreatedAt       time.Time   `json:"created_at,omitempty"`
+	UpdatedAt       time.Time   `json:"updated_at,omitempty"`
+}
+
+// ============================================================================
+// PRODUCT AGREEMENT CONSENT MODELS
+// ============================================================================
+
+// ProductAgreementConsentRequest запрос на создание PA consent
+type ProductAgreementConsentRequest struct {
+	RequestingBank string   `json:"requesting_bank"`
+	ClientID       string   `json:"client_id"`
+	Permissions    []string `json:"permissions"`
+	Reason         string   `json:"reason,omitempty"`
+	AutoApproved   bool     `json:"auto_approved"`
+}
+
+// ProductAgreementConsentResponse ответ с информацией о PA consent
+type ProductAgreementConsentResponse struct {
+	ConsentID      string    `json:"consent_id"`
+	Status         string    `json:"status"`
+	ClientID       string    `json:"client_id,omitempty"`
+	Permissions    []string  `json:"permissions,omitempty"`
+	CreatedAt      time.Time `json:"created_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
+	ExpirationDate time.Time `json:"expiration_date,omitempty"`
+}
+
+// ============================================================================
+// PRODUCT MODELS
+// ============================================================================
+
+// Product представляет банковский продукт
+type Product struct {
+	ProductID   string `json:"product_id"`
+	ProductType string `json:"product_type"` // DEPOSIT, LOAN, CARD
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+	InterestRate struct {
+		Rate string `json:"rate,omitempty"`
+		Type string `json:"type,omitempty"`
+	} `json:"interest_rate,omitempty"`
+	MinAmount string `json:"min_amount,omitempty"`
+	MaxAmount string `json:"max_amount,omitempty"`
+	Term      struct {
+		Min  int    `json:"min,omitempty"`
+		Max  int    `json:"max,omitempty"`
+		Unit string `json:"unit,omitempty"` // DAYS, MONTHS, YEARS
+	} `json:"term,omitempty"`
+}
+
+// ProductsWrapper обертка для списка продуктов
+type ProductsWrapper struct {
+	Products []Product `json:"products,omitempty"`
+	Data     struct {
+		Products []Product `json:"products,omitempty"`
+	} `json:"data,omitempty"`
+}
+
+// ============================================================================
+// AGREEMENT MODELS
+// ============================================================================
+
+// AgreementRequest запрос на открытие договора
+type AgreementRequest struct {
+	ProductID string    `json:"product_id"`
+	ClientID  string    `json:"client_id"`
+	Amount    AmountObj `json:"amount,omitempty"`
+	Term      int       `json:"term,omitempty"`      // в единицах согласно продукту
+	TermUnit  string    `json:"term_unit,omitempty"` // DAYS, MONTHS, YEARS
+	AccountID string    `json:"account_id,omitempty"` // счёт для вклада/списания
+}
+
+// AgreementResponse ответ с информацией о договоре
+type AgreementResponse struct {
+	AgreementID   string    `json:"agreement_id"`
+	ProductID     string    `json:"product_id,omitempty"`
+	ProductType   string    `json:"product_type,omitempty"`
+	Status        string    `json:"status"`
+	ClientID      string    `json:"client_id,omitempty"`
+	Amount        AmountObj `json:"amount,omitempty"`
+	InterestRate  string    `json:"interest_rate,omitempty"`
+	Term          int       `json:"term,omitempty"`
+	TermUnit      string    `json:"term_unit,omitempty"`
+	StartDate     time.Time `json:"start_date,omitempty"`
+	EndDate       time.Time `json:"end_date,omitempty"`
+	AccountID     string    `json:"account_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+}
+
+// AgreementsWrapper обертка для списка договоров
+type AgreementsWrapper struct {
+	Agreements []AgreementResponse `json:"agreements,omitempty"`
+	Data       struct {
+		Agreements []AgreementResponse `json:"agreements,omitempty"`
+	} `json:"data,omitempty"`
 }
