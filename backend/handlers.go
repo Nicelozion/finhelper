@@ -21,9 +21,7 @@ func NewServer(config Config) *Server {
 	}
 }
 
-// ============================================================================
 // HEALTH CHECK
-// ============================================================================
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -33,12 +31,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ============================================================================
 // CONSENT ENDPOINTS
-// ============================================================================
 
 // handleCreateConsent создает согласие на доступ к данным
-// POST /api/consents?bank=vbank&user=user-123
 func (s *Server) handleCreateConsent(w http.ResponseWriter, r *http.Request) {
 	bankCode := r.URL.Query().Get("bank")
 	if bankCode == "" {
@@ -126,12 +121,9 @@ func (s *Server) handleRevokeConsent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ============================================================================
 // LEGACY BANK CONNECTION ENDPOINT (обратная совместимость)
-// ============================================================================
 
 // handleConnectBank legacy endpoint для подключения банка
-// POST /api/banks/{bank}/connect?user=user-123
 func (s *Server) handleConnectBank(w http.ResponseWriter, r *http.Request) {
 	bankCode := r.PathValue("bank")
 	if bankCode == "" {
@@ -168,9 +160,7 @@ func (s *Server) handleConnectBank(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ============================================================================
 // ACCOUNT ENDPOINTS
-// ============================================================================
 
 // handleGetAccounts получает счета пользователя
 // GET /api/accounts?user=user-123&bank=vbank
@@ -208,7 +198,7 @@ func (s *Server) handleGetAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetAccountBalances получает балансы счета
-// GET /api/accounts/{id}/balances?bank=vbank&user=user-123
+
 func (s *Server) handleGetAccountBalances(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("id")
 	if accountID == "" {
@@ -242,7 +232,7 @@ func (s *Server) handleGetAccountBalances(w http.ResponseWriter, r *http.Request
 }
 
 // handleGetAccountTransactions получает транзакции конкретного счета
-// GET /api/accounts/{id}/transactions?bank=vbank&user=user-123&from=2025-01-01&to=2025-12-31
+
 func (s *Server) handleGetAccountTransactions(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("id")
 	if accountID == "" {
@@ -292,10 +282,8 @@ func (s *Server) handleGetAccountTransactions(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, response)
 }
 
-// ============================================================================
-// TRANSACTION ENDPOINTS
-// ============================================================================
 
+// TRANSACTION ENDPOINTS
 // handleGetTransactions получает транзакции со всех счетов или из конкретного банка
 // GET /api/transactions?user=user-123&bank=vbank&from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z
 func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
@@ -345,9 +333,7 @@ func (s *Server) handleGetTransactions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// ============================================================================
 // PAYMENT CONSENT ENDPOINTS
-// ============================================================================
 
 // handleCreatePaymentConsent создает согласие на платеж
 // POST /api/payment-consents?bank=vbank&user=user-123
@@ -411,9 +397,7 @@ func (s *Server) handleGetPaymentConsentStatus(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, consent)
 }
 
-// ============================================================================
 // PAYMENT ENDPOINTS
-// ============================================================================
 
 // handleCreatePayment создает платеж
 // POST /api/payments?bank=vbank&user=user-123
@@ -476,9 +460,7 @@ func (s *Server) handleGetPaymentStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, payment)
 }
 
-// ============================================================================
 // PRODUCT AGREEMENT CONSENT ENDPOINTS
-// ============================================================================
 
 // handleCreatePAConsent создает PA consent
 // POST /api/pa-consents?bank=vbank&user=user-123
@@ -535,9 +517,7 @@ func (s *Server) handleGetPAConsentStatus(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, consent)
 }
 
-// ============================================================================
 // PRODUCT ENDPOINTS
-// ============================================================================
 
 // handleGetProducts получает список продуктов
 // GET /api/products?bank=vbank&user=user-123&type=DEPOSIT
@@ -569,9 +549,7 @@ func (s *Server) handleGetProducts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, products)
 }
 
-// ============================================================================
 // AGREEMENT ENDPOINTS
-// ============================================================================
 
 // handleOpenAgreement открывает договор
 // POST /api/agreements?bank=vbank&user=user-123
@@ -692,9 +670,7 @@ func (s *Server) handleCloseAgreement(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agreement)
 }
 
-// ============================================================================
 // HELPER FUNCTIONS
-// ============================================================================
 
 // writeJSON отправляет JSON ответ
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

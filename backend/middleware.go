@@ -20,10 +20,8 @@ const (
 	CtxRequestID ContextKey = "requestID"
 )
 
-// ============================================================================
 // MIDDLEWARE КОМПОЗИЦИЯ
 // Правильный порядок: Recovery → RequestID → Logging → Timeout → CORS
-// ============================================================================
 
 // ApplyMiddleware применяет все middleware в правильном порядке
 func ApplyMiddleware(handler http.Handler, corsOrigin string) http.Handler {
@@ -37,15 +35,13 @@ func ApplyMiddleware(handler http.Handler, corsOrigin string) http.Handler {
 	return handler
 }
 
-// ============================================================================
 // RECOVERY - восстановление после паники (самый внешний слой)
-// ============================================================================
 
 func withRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				// ✅ Берем request ID из КОНТЕКСТА, а не из заголовка
+				// Берем request ID из КОНТЕКСТА, а не из заголовка
 				requestID := getRequestID(r.Context())
 				
 				stack := debug.Stack()
@@ -61,9 +57,7 @@ func withRecovery(next http.Handler) http.Handler {
 	})
 }
 
-// ============================================================================
 // REQUEST ID - добавление уникального ID запроса
-// ============================================================================
 
 func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,22 +70,20 @@ func withRequestID(next http.Handler) http.Handler {
 		// Добавляем в заголовок ответа
 		w.Header().Set("X-Request-Id", requestID)
 
-		// ✅ Сохраняем в КОНТЕКСТ
+		// Сохраняем в КОНТЕКСТ
 		ctx := context.WithValue(r.Context(), CtxRequestID, requestID)
 		
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// ============================================================================
 // LOGGING - логирование запросов
-// ============================================================================
 
 func withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// ✅ Берем request ID из КОНТЕКСТА
+		// Берем request ID из КОНТЕКСТА
 		requestID := getRequestID(r.Context())
 
 		// Wrapper для захвата status code
@@ -117,9 +109,7 @@ func withLogging(next http.Handler) http.Handler {
 	})
 }
 
-// ============================================================================
 // TIMEOUT - ограничение времени выполнения запроса
-// ============================================================================
 
 func withTimeout(next http.Handler, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,22 +120,20 @@ func withTimeout(next http.Handler, timeout time.Duration) http.Handler {
 	})
 }
 
-// ============================================================================
 // CORS - настройка Cross-Origin Resource Sharing
-// ============================================================================
 
 func withCORS(next http.Handler, allowedOrigin string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// ✅ Правильные CORS заголовки
+		// Правильные CORS заголовки
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		
-		// ✅ Разрешаем все необходимые заголовки
+		// Разрешаем все необходимые заголовки
 		w.Header().Set("Access-Control-Allow-Headers", 
 			"Content-Type, X-Request-Id, X-Consent-Id, Authorization")
 		
-		// ✅ Разрешаем клиенту читать заголовки ответа
+		// Разрешаем клиенту читать заголовки ответа
 		w.Header().Set("Access-Control-Expose-Headers", 
 			"X-Request-Id, X-Consent-Id")
 
@@ -159,9 +147,7 @@ func withCORS(next http.Handler, allowedOrigin string) http.Handler {
 	})
 }
 
-// ============================================================================
 // HELPERS
-// ============================================================================
 
 // getRequestID безопасно извлекает request ID из контекста
 func getRequestID(ctx context.Context) string {
@@ -188,9 +174,7 @@ func maskBearer(value string) string {
 	return "***"
 }
 
-// ============================================================================
 // RESPONSE WRITER WRAPPER - для захвата status code
-// ============================================================================
 
 type responseWriter struct {
 	http.ResponseWriter

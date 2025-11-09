@@ -35,9 +35,7 @@ func NewBankAPIClient(baseURL, clientID, clientSecret, requestingBank string) *B
 	}
 }
 
-// ============================================================================
 // AUTHENTICATION
-// ============================================================================
 
 // EnsureToken получает или возвращает кэшированный токен
 func (c *BankAPIClient) EnsureToken(ctx context.Context) (string, error) {
@@ -70,7 +68,7 @@ func (c *BankAPIClient) EnsureToken(ctx context.Context) (string, error) {
 
 // requestToken запрашивает новый bank token
 func (c *BankAPIClient) requestToken(ctx context.Context) (string, error) {
-	// ✅ ИСПРАВЛЕНИЕ: API ожидает параметры в QUERY STRING!
+	// ИСПРАВЛЕНИЕ: API ожидает параметры в QUERY STRING!
 	queryParams := url.Values{}
 	queryParams.Set("client_id", c.clientID)
 	queryParams.Set("client_secret", c.clientSecret)
@@ -82,8 +80,8 @@ func (c *BankAPIClient) requestToken(ctx context.Context) (string, error) {
 	resp, err := c.httpClient.DoRequest(ctx, RequestOptions{
 		Method:      http.MethodPost,
 		Path:        "/auth/bank-token",
-		QueryParams: queryParams, // ← Параметры в query!
-		Body:        nil,         // ← Body пустой!
+		QueryParams: queryParams, // Параметры в query!
+		Body:        nil,         // Body пустой!
 	})
 	if err != nil {
 		return "", fmt.Errorf("token request: %w", err)
@@ -111,9 +109,7 @@ func (c *BankAPIClient) requestToken(ctx context.Context) (string, error) {
 	return c.accessToken, nil
 }
 
-// ============================================================================
 // CONSENT MANAGEMENT
-// ============================================================================
 
 // CreateConsent создает согласие на доступ к данным клиента
 func (c *BankAPIClient) CreateConsent(ctx context.Context, clientID string, permissions []string, reason string) (*ConsentResponse, error) {
@@ -219,9 +215,7 @@ func (c *BankAPIClient) RevokeConsent(ctx context.Context, consentID string) err
 	return nil
 }
 
-// ============================================================================
 // ACCOUNTS
-// ============================================================================
 
 // GetAccounts получает список счетов клиента
 func (c *BankAPIClient) GetAccounts(ctx context.Context, consentID, clientID string) ([]AccountDetail, error) {
@@ -236,7 +230,7 @@ func (c *BankAPIClient) GetAccounts(ctx context.Context, consentID, clientID str
 		"X-Consent-Id":      consentID,
 	}
 
-	// ✅ ИСПОЛЬЗУЕМ url.Values для безопасного построения query
+	//ИСПОЛЬЗУЕМ url.Values для безопасного построения query
 	queryParams := url.Values{}
 	if clientID != "" {
 		queryParams.Set("client_id", clientID)
@@ -269,13 +263,13 @@ func (c *BankAPIClient) parseAccountsResponse(resp *http.Response) ([]AccountDet
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	// Вариант 1: массив напрямую
+	// Вариант 1 массив напрямую
 	var directArray []AccountDetail
 	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
 		return directArray, nil
 	}
 
-	// Вариант 2: обертка с полем "accounts" (множественное число!)
+	// Вариант 2 обертка с полем "accounts"
 	var wrapper AccountsWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Accounts) > 0 {
@@ -331,9 +325,7 @@ func (c *BankAPIClient) GetAccountDetail(ctx context.Context, consentID, account
 	return &account, nil
 }
 
-// ============================================================================
 // BALANCES
-// ============================================================================
 
 // GetBalances получает балансы счета
 func (c *BankAPIClient) GetBalances(ctx context.Context, consentID, accountID, clientID string) ([]BalanceDetail, error) {
@@ -380,13 +372,13 @@ func (c *BankAPIClient) parseBalancesResponse(resp *http.Response) ([]BalanceDet
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	// Вариант 1: массив напрямую
+	// Вариант 1 массив напрямую
 	var directArray []BalanceDetail
 	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
 		return directArray, nil
 	}
 
-	// Вариант 2: обертка с полем "balances" (множественное число!)
+	// Вариант 2 обертка с полем "balances" 
 	var wrapper BalancesWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Balances) > 0 {
@@ -400,9 +392,7 @@ func (c *BankAPIClient) parseBalancesResponse(resp *http.Response) ([]BalanceDet
 	return []BalanceDetail{}, nil
 }
 
-// ============================================================================
 // TRANSACTIONS
-// ============================================================================
 
 // GetTransactions получает транзакции счета за период
 func (c *BankAPIClient) GetTransactions(ctx context.Context, consentID, accountID, clientID string, from, to time.Time) ([]TransactionDetail, error) {
@@ -417,7 +407,7 @@ func (c *BankAPIClient) GetTransactions(ctx context.Context, consentID, accountI
 		"X-Consent-Id":      consentID,
 	}
 
-	// ✅ ИСПОЛЬЗУЕМ url.Values для безопасного построения query
+	// ИСПОЛЬЗУЕМ url.Values для безопасного построения query
 	queryParams := url.Values{}
 	if clientID != "" {
 		queryParams.Set("client_id", clientID)
@@ -455,13 +445,13 @@ func (c *BankAPIClient) parseTransactionsResponse(resp *http.Response) ([]Transa
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	// Вариант 1: массив напрямую
+	// Вариант 1 массив напрямую
 	var directArray []TransactionDetail
 	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
 		return directArray, nil
 	}
 
-	// Вариант 2: обертка с полем "transactions" (множественное число!)
+	// Вариант 2 обертка с полем "transactions" 
 	var wrapper TransactionsWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Transactions) > 0 {
@@ -475,9 +465,7 @@ func (c *BankAPIClient) parseTransactionsResponse(resp *http.Response) ([]Transa
 	return []TransactionDetail{}, nil
 }
 
-// ============================================================================
 // PAYMENT CONSENT MANAGEMENT
-// ============================================================================
 
 // CreatePaymentConsent создает согласие на выполнение платежа
 func (c *BankAPIClient) CreatePaymentConsent(ctx context.Context, req PaymentConsentRequest) (*PaymentConsentResponse, error) {
@@ -546,9 +534,7 @@ func (c *BankAPIClient) GetPaymentConsentStatus(ctx context.Context, consentID s
 	return &consent, nil
 }
 
-// ============================================================================
 // PAYMENTS
-// ============================================================================
 
 // CreatePayment создает платеж
 func (c *BankAPIClient) CreatePayment(ctx context.Context, paymentConsentID, clientID string, req PaymentRequest) (*PaymentResponse, error) {
@@ -632,9 +618,7 @@ func (c *BankAPIClient) GetPaymentStatus(ctx context.Context, paymentID, clientI
 	return &payment, nil
 }
 
-// ============================================================================
 // PRODUCT AGREEMENT CONSENT MANAGEMENT
-// ============================================================================
 
 // CreateProductAgreementConsent создает согласие для работы с продуктами/договорами
 func (c *BankAPIClient) CreateProductAgreementConsent(ctx context.Context, req ProductAgreementConsentRequest) (*ProductAgreementConsentResponse, error) {
@@ -703,9 +687,7 @@ func (c *BankAPIClient) GetProductAgreementConsentStatus(ctx context.Context, co
 	return &consent, nil
 }
 
-// ============================================================================
 // PRODUCTS
-// ============================================================================
 
 // GetProducts получает список доступных продуктов банка
 func (c *BankAPIClient) GetProducts(ctx context.Context, clientID string, productType string) ([]Product, error) {
@@ -773,9 +755,7 @@ func (c *BankAPIClient) parseProductsResponse(resp *http.Response) ([]Product, e
 	return []Product{}, nil
 }
 
-// ============================================================================
 // AGREEMENTS (DEPOSIT/LOAN/CARD)
-// ============================================================================
 
 // OpenAgreement открывает договор (вклад/кредит/карта)
 func (c *BankAPIClient) OpenAgreement(ctx context.Context, paConsentID, clientID string, req AgreementRequest) (*AgreementResponse, error) {
@@ -951,13 +931,13 @@ func (c *BankAPIClient) parseAgreementsResponse(resp *http.Response) ([]Agreemen
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	// Вариант 1: массив напрямую
+	// Вариант 1 массив напрямую
 	var directArray []AgreementResponse
 	if err := json.Unmarshal(bodyBytes, &directArray); err == nil && len(directArray) > 0 {
 		return directArray, nil
 	}
 
-	// Вариант 2: обертка с полем "agreements"
+	// Вариант 2 обертка с полем "agreements"
 	var wrapper AgreementsWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Agreements) > 0 {
