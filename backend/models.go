@@ -1,9 +1,54 @@
 package main
 
 import (
+	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// FlexibleTime поддерживает парсинг времени в разных форматах
+type FlexibleTime struct {
+	time.Time
+}
+
+// UnmarshalJSON парсит время в нескольких форматах
+func (ft *FlexibleTime) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), "\"")
+
+	if s == "null" || s == "" {
+		ft.Time = time.Time{}
+		return nil
+	}
+
+	// Попробуем несколько форматов
+	formats := []string{
+		time.RFC3339Nano,                    // 2006-01-02T15:04:05.999999999Z07:00
+		time.RFC3339,                        // 2006-01-02T15:04:05Z07:00
+		"2006-01-02T15:04:05.999999999",     // Без timezone
+		"2006-01-02T15:04:05.999999",        // Без timezone (6 цифр)
+		"2006-01-02T15:04:05",               // Без timezone и милисекунд
+		"2006-01-02",                        // Только дата
+	}
+
+	var err error
+	for _, format := range formats {
+		ft.Time, err = time.Parse(format, s)
+		if err == nil {
+			return nil
+		}
+	}
+
+	return err
+}
+
+// MarshalJSON сериализует время в RFC3339Nano формат
+func (ft FlexibleTime) MarshalJSON() ([]byte, error) {
+	if ft.IsZero() {
+		return []byte("null"), nil
+	}
+	return json.Marshal(ft.Format(time.RFC3339Nano))
+}
 
 // REQUEST/RESPONSE MODELS
 
@@ -18,14 +63,14 @@ type ConsentRequest struct {
 
 // ConsentResponse представляет ответ с информацией о согласии
 type ConsentResponse struct {
-	Status         string    `json:"status"`
-	ConsentID      string    `json:"consent_id"`
-	ClientID       string    `json:"client_id,omitempty"`
-	Permissions    []string  `json:"permissions,omitempty"`
-	ExpirationDate time.Time `json:"expiration_date,omitempty"`
-	CreatedAt      time.Time `json:"created_at,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at,omitempty"`
-	Reason         string    `json:"reason,omitempty"`
+	Status         string       `json:"status"`
+	ConsentID      string       `json:"consent_id"`
+	ClientID       string       `json:"client_id,omitempty"`
+	Permissions    []string     `json:"permissions,omitempty"`
+	ExpirationDate FlexibleTime `json:"expiration_date,omitempty"`
+	CreatedAt      FlexibleTime `json:"created_at,omitempty"`
+	UpdatedAt      FlexibleTime `json:"updated_at,omitempty"`
+	Reason         string       `json:"reason,omitempty"`
 }
 
 // TokenResponse представляет ответ с токеном
@@ -97,15 +142,15 @@ type BalancesWrapper struct {
 
 // TransactionDetail представляет детальную информацию о транзакции
 type TransactionDetail struct {
-	AccountID            string    `json:"account_id,omitempty"`
-	TransactionID        string    `json:"transaction_id"`
-	TransactionReference string    `json:"transaction_reference,omitempty"`
-	Amount               AmountObj `json:"amount"`
-	CreditDebitIndicator string    `json:"credit_debit_indicator"`
-	Status               string    `json:"status"`
-	BookingDateTime      time.Time `json:"booking_date_time"`
-	ValueDateTime        time.Time `json:"value_date_time,omitempty"`
-	TransactionInformation string  `json:"transaction_information,omitempty"`
+	AccountID            string       `json:"account_id,omitempty"`
+	TransactionID        string       `json:"transaction_id"`
+	TransactionReference string       `json:"transaction_reference,omitempty"`
+	Amount               AmountObj    `json:"amount"`
+	CreditDebitIndicator string       `json:"credit_debit_indicator"`
+	Status               string       `json:"status"`
+	BookingDateTime      FlexibleTime `json:"booking_date_time"`
+	ValueDateTime        FlexibleTime `json:"value_date_time,omitempty"`
+	TransactionInformation string     `json:"transaction_information,omitempty"`
 	BankTransactionCode  struct {
 		Code        string `json:"code,omitempty"`
 		SubCode     string `json:"sub_code,omitempty"`
@@ -201,7 +246,7 @@ func (ad *AccountDetail) ToLegacyAccount(bank string) Account {
 // ToLegacyTransaction конвертирует TransactionDetail в упрощенную модель
 func (td *TransactionDetail) ToLegacyTransaction(bank string) Transaction {
 	amount := parseAmount(td.Amount.Amount)
-	
+
 	// Если это дебет (списание), делаем сумму отрицательной
 	if td.CreditDebitIndicator == "Debit" {
 		amount = -amount
@@ -209,7 +254,7 @@ func (td *TransactionDetail) ToLegacyTransaction(bank string) Transaction {
 
 	return Transaction{
 		ID:          td.TransactionID,
-		Date:        td.BookingDateTime,
+		Date:        td.BookingDateTime.Time,
 		Amount:      amount,
 		Currency:    td.Amount.Currency,
 		Merchant:    td.MerchantDetails.MerchantName,
@@ -261,13 +306,13 @@ type AccountInfo struct {
 
 // PaymentConsentResponse ответ с информацией о payment consent
 type PaymentConsentResponse struct {
-	ConsentID      string      `json:"consent_id"`
-	Status         string      `json:"status"`
-	ClientID       string      `json:"client_id,omitempty"`
-	PaymentDetails PaymentInfo `json:"payment_details,omitempty"`
-	CreatedAt      time.Time   `json:"created_at,omitempty"`
-	UpdatedAt      time.Time   `json:"updated_at,omitempty"`
-	ExpirationDate time.Time   `json:"expiration_date,omitempty"`
+	ConsentID      string       `json:"consent_id"`
+	Status         string       `json:"status"`
+	ClientID       string       `json:"client_id,omitempty"`
+	PaymentDetails PaymentInfo  `json:"payment_details,omitempty"`
+	CreatedAt      FlexibleTime `json:"created_at,omitempty"`
+	UpdatedAt      FlexibleTime `json:"updated_at,omitempty"`
+	ExpirationDate FlexibleTime `json:"expiration_date,omitempty"`
 }
 
 // PAYMENT MODELS
@@ -283,14 +328,14 @@ type PaymentRequest struct {
 
 // PaymentResponse ответ с информацией о платеже
 type PaymentResponse struct {
-	PaymentID       string      `json:"payment_id"`
-	Status          string      `json:"status"`
-	DebtorAccount   AccountInfo `json:"debtor_account,omitempty"`
-	CreditorAccount AccountInfo `json:"creditor_account,omitempty"`
-	Amount          AmountObj   `json:"amount,omitempty"`
-	Reference       string      `json:"reference,omitempty"`
-	CreatedAt       time.Time   `json:"created_at,omitempty"`
-	UpdatedAt       time.Time   `json:"updated_at,omitempty"`
+	PaymentID       string       `json:"payment_id"`
+	Status          string       `json:"status"`
+	DebtorAccount   AccountInfo  `json:"debtor_account,omitempty"`
+	CreditorAccount AccountInfo  `json:"creditor_account,omitempty"`
+	Amount          AmountObj    `json:"amount,omitempty"`
+	Reference       string       `json:"reference,omitempty"`
+	CreatedAt       FlexibleTime `json:"created_at,omitempty"`
+	UpdatedAt       FlexibleTime `json:"updated_at,omitempty"`
 }
 
 // PRODUCT AGREEMENT CONSENT MODELS
@@ -306,13 +351,13 @@ type ProductAgreementConsentRequest struct {
 
 // ProductAgreementConsentResponse ответ с информацией о PA consent
 type ProductAgreementConsentResponse struct {
-	ConsentID      string    `json:"consent_id"`
-	Status         string    `json:"status"`
-	ClientID       string    `json:"client_id,omitempty"`
-	Permissions    []string  `json:"permissions,omitempty"`
-	CreatedAt      time.Time `json:"created_at,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at,omitempty"`
-	ExpirationDate time.Time `json:"expiration_date,omitempty"`
+	ConsentID      string       `json:"consent_id"`
+	Status         string       `json:"status"`
+	ClientID       string       `json:"client_id,omitempty"`
+	Permissions    []string     `json:"permissions,omitempty"`
+	CreatedAt      FlexibleTime `json:"created_at,omitempty"`
+	UpdatedAt      FlexibleTime `json:"updated_at,omitempty"`
+	ExpirationDate FlexibleTime `json:"expiration_date,omitempty"`
 }
 
 // PRODUCT MODELS
@@ -359,20 +404,20 @@ type AgreementRequest struct {
 
 // AgreementResponse ответ с информацией о договоре
 type AgreementResponse struct {
-	AgreementID   string    `json:"agreement_id"`
-	ProductID     string    `json:"product_id,omitempty"`
-	ProductType   string    `json:"product_type,omitempty"`
-	Status        string    `json:"status"`
-	ClientID      string    `json:"client_id,omitempty"`
-	Amount        AmountObj `json:"amount,omitempty"`
-	InterestRate  string    `json:"interest_rate,omitempty"`
-	Term          int       `json:"term,omitempty"`
-	TermUnit      string    `json:"term_unit,omitempty"`
-	StartDate     time.Time `json:"start_date,omitempty"`
-	EndDate       time.Time `json:"end_date,omitempty"`
-	AccountID     string    `json:"account_id,omitempty"`
-	CreatedAt     time.Time `json:"created_at,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	AgreementID   string       `json:"agreement_id"`
+	ProductID     string       `json:"product_id,omitempty"`
+	ProductType   string       `json:"product_type,omitempty"`
+	Status        string       `json:"status"`
+	ClientID      string       `json:"client_id,omitempty"`
+	Amount        AmountObj    `json:"amount,omitempty"`
+	InterestRate  string       `json:"interest_rate,omitempty"`
+	Term          int          `json:"term,omitempty"`
+	TermUnit      string       `json:"term_unit,omitempty"`
+	StartDate     FlexibleTime `json:"start_date,omitempty"`
+	EndDate       FlexibleTime `json:"end_date,omitempty"`
+	AccountID     string       `json:"account_id,omitempty"`
+	CreatedAt     FlexibleTime `json:"created_at,omitempty"`
+	UpdatedAt     FlexibleTime `json:"updated_at,omitempty"`
 }
 
 // AgreementsWrapper обертка для списка договоров
