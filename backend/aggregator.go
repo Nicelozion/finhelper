@@ -54,6 +54,7 @@ func (a *BankAggregator) EnsureConsent(ctx context.Context, bankCode, userID str
 	a.mu.RLock()
 	if consentID, exists := a.consentCache[cacheKey]; exists {
 		a.mu.RUnlock()
+		log.Printf("[DEBUG] Using cached consent for bank=%s user=%s: %s", bankCode, userID, consentID)
 		return consentID, nil
 	}
 	a.mu.RUnlock()
@@ -145,6 +146,8 @@ func (a *BankAggregator) GetAccountsFromBank(ctx context.Context, bankCode, user
 	if err != nil {
 		return nil, fmt.Errorf("ensure consent: %w", err)
 	}
+
+	log.Printf("[DEBUG] Using consent_id=%s for bank=%s user=%s", consentID, bankCode, userID)
 
 	// Получаем клиент
 	client, err := a.getClient(bankCode)

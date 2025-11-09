@@ -43,7 +43,7 @@ func (s *Server) handleCreateConsent(w http.ResponseWriter, r *http.Request) {
 
 	userID := r.URL.Query().Get("user")
 	if userID == "" {
-		userID = "demo-user-1" // default для тестирования
+		userID = "team053-1" // default для тестирования
 	}
 
 	// Проверяем что банк существует

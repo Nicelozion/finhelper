@@ -95,6 +95,12 @@ func (c *HTTPClient) DoRequest(ctx context.Context, opts RequestOptions) (*http.
 			req.Header.Set(key, value)
 		}
 
+		// Debug: логируем важные заголовки
+		if consentID := req.Header.Get("X-Consent-Id"); consentID != "" {
+			log.Printf("[DEBUG HTTP] Headers: X-Consent-Id=%s, X-Requesting-Bank=%s",
+				consentID, req.Header.Get("X-Requesting-Bank"))
+		}
+
 		// Выполняем запрос
 		resp, err := c.client.Do(req)
 		if err != nil {

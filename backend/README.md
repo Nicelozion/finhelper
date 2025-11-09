@@ -116,24 +116,7 @@ CORS_ORIGIN=http://localhost:5173
 
 **ВАЖНО**: Проект состоит из нескольких .go файлов в одном пакете, поэтому используйте `go run .` вместо `go run main.go`
 
-**Способ 1: Быстрый запуск через скрипт (РЕКОМЕНДУЕТСЯ)**
----
-```bash
-# Windows (PowerShell)
-.\start.ps1
-
-# Linux/macOS
-./start.sh
-```
----
-
-Скрипт автоматически:
-- ✅ Проверяет наличие Go
-- ✅ Копирует [.env.example](c:\Project\finhelper\backend\.env.example) в [.env](c:\Project\finhelper\backend\.env) (если .env отсутствует)
-- ✅ Устанавливает зависимости
-- ✅ Запускает сервер
-
-**Способ 2: Ручной запуск**
+**Способ 1: Быстрый запуск (РЕКОМЕНДУЕТСЯ)**
 ---
 ```bash
 # Запуск всех файлов пакета
@@ -144,18 +127,16 @@ go run *.go
 ```
 ---
 
-**Сборка и запуск:**
+**Способ 2: Сборка и запуск:**
 ---
 ```bash
-# Сборка (текущая директория)
-go build -o backend.exe
-
-# Или явно указать все файлы
-go build -o backend.exe .
+# Сборка
+go build -o finhelper.exe .      # Windows
+go build -o finhelper .          # Linux/macOS
 
 # Запуск
-./backend.exe        # Windows
-./backend            # Linux/macOS
+./finhelper.exe                  # Windows
+./finhelper                      # Linux/macOS
 ```
 ---
 
@@ -188,10 +169,24 @@ Available endpoints:
 ---
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:8080/healthz
 
 # Ожидаемый ответ:
-{"status":"ok"}
+{"banks":3,"status":"ok","timestamp":"2025-11-09T21:43:43Z"}
+```
+---
+
+**Тест полного workflow:**
+---
+```bash
+# 1. Создание consent
+curl -X POST "http://localhost:8080/api/consents?bank=vbank&user=team053-1"
+
+# 2. Получение счетов
+curl "http://localhost:8080/api/accounts?bank=vbank&user=team053-1"
+
+# 3. Получение баланса (замените acc-1621 на ID счёта из шага 2)
+curl "http://localhost:8080/api/accounts/acc-1621/balances?bank=vbank&user=team053-1"
 ```
 ---
 
@@ -247,18 +242,25 @@ Backend поддерживает работу с **10 типами клиент�
 
 ### Примеры использования
 
-**Создание consent для студента:**
+**Создание consent для студента (PowerShell):**
+```powershell
+Invoke-WebRequest -Method POST -Uri "http://localhost:8080/api/consents?bank=vbank&user=team053-5" | Select-Object -ExpandProperty Content
+```
+
+**Получение счетов VIP клиента (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "http://localhost:8080/api/accounts?bank=vbank&user=team053-2" | Select-Object -ExpandProperty Content
+```
+
+**Получение продуктов для VIP Premium (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "http://localhost:8080/api/products?bank=vbank&user=team053-10&type=DEPOSIT" | Select-Object -ExpandProperty Content
+```
+
+**Linux/macOS (curl):**
 ```bash
 curl -X POST "http://localhost:8080/api/consents?bank=vbank&user=team053-5"
-```
-
-**Получение счетов VIP клиента:**
-```bash
 curl "http://localhost:8080/api/accounts?bank=vbank&user=team053-2"
-```
-
-**Получение продуктов для VIP Premium:**
-```bash
 curl "http://localhost:8080/api/products?bank=vbank&user=team053-10&type=DEPOSIT"
 ```
 
@@ -333,17 +335,17 @@ GET /api/accounts?user=user123&bank=vbank
 **Ответ:**
 ---
 ```json
-{
-  "accounts": [
-    {
-      "accountId": "acc-001",
-      "currency": "RUB",
-      "accountType": "Personal",
-      "accountSubType": "CurrentAccount",
-      "nickname": "Основной счет"
-    }
-  ]
-}
+[
+  {
+    "id": "acc-1621",
+    "ext_id": "4081781005301042048",
+    "bank": "vbank",
+    "type": "Personal",
+    "currency": "RUB",
+    "balance": 0,
+    "owner": "Иванов Иван Иванович (team053)"
+  }
+]
 ```
 ---
 
@@ -358,20 +360,28 @@ GET /api/accounts/{accountId}/balances?bank=vbank&user=user123
 **Ответ:**
 ---
 ```json
-{
-  "balances": [
-    {
-      "accountId": "acc-001",
-      "creditDebitIndicator": "Credit",
-      "type": "InterimAvailable",
-      "dateTime": "2024-01-15T10:30:00Z",
-      "amount": {
-        "amount": "15000.50",
-        "currency": "RUB"
-      }
+[
+  {
+    "accountId": "acc-1621",
+    "creditDebitIndicator": "Credit",
+    "type": "InterimAvailable",
+    "dateTime": "2025-11-09T18:43:43.062776Z",
+    "amount": {
+      "amount": "97593.32",
+      "currency": "RUB"
     }
-  ]
-}
+  },
+  {
+    "accountId": "acc-1621",
+    "creditDebitIndicator": "Credit",
+    "type": "InterimBooked",
+    "dateTime": "2025-11-09T18:43:43.062788Z",
+    "amount": {
+      "amount": "97593.32",
+      "currency": "RUB"
+    }
+  }
+]
 ```
 ---
 
@@ -546,7 +556,7 @@ POST /api/banks/{bank}/connect?user=user123
 backend/
 ├── main.go                  # Точка входа, инициализация сервера, роутинг
 ├── config.go                # Загрузка и парсинг конфигурации
-├── models.go                # Модели данных (Account, Transaction, etc.)
+├── models.go                # Модели данных (Account, Transaction, Balance, etc.)
 ├── handlers.go              # HTTP обработчики для всех endpoints
 ├── middleware.go            # Middleware (CORS, логирование, recovery, timeout)
 ├── aggregator.go            # Логика агрегации данных из нескольких банков
@@ -557,78 +567,62 @@ backend/
 ├── .env.example             # Пример конфигурации
 ├── .env                     # Реальная конфигурация (не коммитится)
 ├── .gitignore               # Правила игнорирования для git
-├── start.ps1                # Скрипт запуска для Windows
-├── start.sh                 # Скрипт запуска для Linux/macOS
-├── test_api.ps1             # Скрипт тестирования API для Windows
-├── test_api.sh              # Скрипт тестирования API для Linux/macOS
-├── test_users.ps1           # Тестирование типов пользователей (Windows)
-├── test_users.sh            # Тестирование типов пользователей (Linux/macOS)
+├── Makefile                 # Команды для сборки и тестирования
 ├── README.md                # Основная документация проекта
-├── USER_TYPES.md            # Документация по типам пользователей
-└── QUICK_START_USERS.md     # Быстрый старт для работы с пользователями
+└── USER_TYPES.md            # Документация по типам пользователей
 ```
 ---
 
 ### Описание ключевых файлов
 
-| Файл | Строк | Назначение |
-|------|-------|------------|
-| `main.go` | 118 | Запуск сервера, регистрация маршрутов |
-| `handlers.go` | 715 | Обработка HTTP запросов |
-| `aggregator.go` | 593 | Агрегация данных, управление консентами |
-| `bank_api.go` | 951 | API клиент для банков, управление токенами |
-| `models.go` | 383 | Структуры данных |
-| `middleware.go` | 197 | HTTP middleware (логирование, CORS, timeout) |
-| `http_client.go` | 157 | HTTP клиент с retry и exponential backoff |
-| `config.go` | 101 | Конфигурация из переменных окружения |
+| Файл | Назначение |
+|------|------------|
+| `main.go` | Запуск сервера, регистрация маршрутов |
+| `handlers.go` | Обработка HTTP запросов |
+| `aggregator.go` | Агрегация данных, управление консентами |
+| `bank_api.go` | API клиент для банков, управление токенами |
+| `models.go` | Структуры данных (поддержка camelCase для банковского API) |
+| `middleware.go` | HTTP middleware (логирование, CORS, timeout) |
+| `http_client.go` | HTTP клиент с retry и exponential backoff |
+| `config.go` | Конфигурация из переменных окружения |
+
+**Важно**: Модели в `models.go` используют **camelCase** JSON теги для совместимости с банковским API (`accountId`, `accountType`, `creditDebitIndicator`, `dateTime` и т.д.)
 
 ## Тестирование API
 
-### Быстрое тестирование через скрипт
+### Быстрое тестирование с помощью PowerShell
 
-Для автоматического тестирования основных endpoints используйте готовые скрипты:
-
+**Windows (PowerShell):**
 ---
-```bash
-# Windows (PowerShell)
-.\test_api.ps1
+```powershell
+# Health check
+Invoke-WebRequest -Uri "http://localhost:8080/healthz" | Select-Object -ExpandProperty Content
 
-# Linux/macOS
-./test_api.sh
+# Создание consent
+Invoke-WebRequest -Method POST -Uri "http://localhost:8080/api/consents?bank=vbank&user=team053-1" | Select-Object -ExpandProperty Content
+
+# Получение счетов
+Invoke-WebRequest -Uri "http://localhost:8080/api/accounts?bank=vbank&user=team053-1" | Select-Object -ExpandProperty Content
+
+# Получение баланса (используйте ID счёта из предыдущего запроса)
+Invoke-WebRequest -Uri "http://localhost:8080/api/accounts/acc-1621/balances?bank=vbank&user=team053-1" | Select-Object -ExpandProperty Content
 ```
 ---
 
-Скрипт автоматически протестирует:
-- ✅ Health check
-- ✅ Создание консента
-- ✅ Получение статуса консента
-- ✅ Получение счетов
-- ✅ Получение баланса
-- ✅ Получение транзакций
-- ✅ Получение продуктов
-
-### Тестирование типов пользователей
-
-Для тестирования работы с разными типами клиентов (team053-1 до team053-10):
+### Тестирование всех типов пользователей (PowerShell)
 
 ---
-```bash
-# Windows (PowerShell)
-.\test_users.ps1
-
-# Linux/macOS
-./test_users.sh
+```powershell
+# Автоматический тест всех 10 пользователей
+1..10 | ForEach-Object {
+    Write-Host "`n=== team053-$_ ===" -ForegroundColor Cyan
+    Invoke-WebRequest -Method POST -Uri "http://localhost:8080/api/consents?bank=vbank&user=team053-$_" | Select-Object -ExpandProperty Content
+    Invoke-WebRequest -Uri "http://localhost:8080/api/accounts?bank=vbank&user=team053-$_" | Select-Object -ExpandProperty Content
+}
 ```
 ---
 
-Скрипт протестирует:
-- ✅ Создание consent для каждого типа клиента
-- ✅ Получение счетов для разных типов
-- ✅ Получение балансов
-- ✅ Получение транзакций
-- ✅ Проверку доступных продуктов (DEPOSIT, LOAN, CARD)
-
-### Ручное тестирование с помощью curl
+### Ручное тестирование с помощью curl (Linux/macOS)
 
 #### 1. Health check
 ---
@@ -664,18 +658,16 @@ curl -X POST "http://localhost:8080/api/payment-consents?bank=vbank&user=testuse
 ```
 ---
 
-### С помощью PowerShell (Windows)
+### Используя Makefile
+
+Если у вас установлен `make`:
 
 ---
-```powershell
-# Health check
-Invoke-RestMethod -Uri "http://localhost:8080/health"
-
-# Создание консента
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/consents?bank=vbank&user=testuser"
-
-# Получение счетов
-Invoke-RestMethod -Uri "http://localhost:8080/api/accounts?user=testuser&bank=vbank"
+```bash
+make test-api          # Запустить тесты API
+make build             # Собрать проект
+make run               # Запустить сервер
+make clean             # Очистить собранные файлы
 ```
 ---
 
@@ -753,8 +745,8 @@ go run .
 go run *.go
 
 # Вариант 3: сначала собрать, потом запустить
-go build -o backend.exe
-./backend.exe
+go build -o finhelper.exe .
+./finhelper.exe
 ```
 ---
 
@@ -911,10 +903,34 @@ HTTP клиент (`http_client.go`) автоматически повторяе
    - `CLIENT_SECRET` маскируется в логах
    - Bearer токены не отображаются полностью
 
+## Особенности API
+
+### JSON Naming Convention
+
+Банковское API использует **camelCase** для полей JSON. Все модели данных (`models.go`) настроены соответствующим образом:
+
+| Поле Go | JSON поле | Пример |
+|---------|-----------|--------|
+| `AccountID` | `accountId` | `"accountId": "acc-1621"` |
+| `AccountType` | `accountType` | `"accountType": "Personal"` |
+| `CreditDebitIndicator` | `creditDebitIndicator` | `"creditDebitIndicator": "Credit"` |
+| `DateTime` | `dateTime` | `"dateTime": "2025-11-09T18:43:43Z"` |
+
+### Fallback значения
+
+Если параметр `user` не передан в запросе, используется значение по умолчанию: `team053-1`
+
+### Поддержка вариативных форматов
+
+API поддерживает парсинг данных в разных форматах от банковских API:
+- Единственное и множественное число: `account` / `accounts`, `balance` / `balances`
+- Разные структуры обёрток: прямой массив или `{"data": {...}}`
+
 ## Лицензия
 
 Проект для внутреннего использования.
 
 **Версия**: 1.0.0
 **Go версия**: 1.25.3+
+**Последнее обновление**: 2025-11-09
 

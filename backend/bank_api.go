@@ -269,18 +269,38 @@ func (c *BankAPIClient) parseAccountsResponse(resp *http.Response) ([]AccountDet
 		return directArray, nil
 	}
 
-	// Вариант 2 обертка с полем "accounts"
+	// Вариант 2 обертка с полем "accounts" или "account"
 	var wrapper AccountsWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
+		log.Printf("[DEBUG PARSE] wrapper.Accounts=%d, wrapper.Account=%d, wrapper.Data.Accounts=%d, wrapper.Data.Account=%d",
+			len(wrapper.Accounts), len(wrapper.Account), len(wrapper.Data.Accounts), len(wrapper.Data.Account))
+
+		// Проверяем множественное число "accounts"
 		if len(wrapper.Accounts) > 0 {
+			log.Printf("[DEBUG PARSE] Returning wrapper.Accounts")
 			return wrapper.Accounts, nil
 		}
+		// Проверяем единственное число "account"
+		if len(wrapper.Account) > 0 {
+			log.Printf("[DEBUG PARSE] Returning wrapper.Account")
+			return wrapper.Account, nil
+		}
+		// Проверяем data.accounts
 		if len(wrapper.Data.Accounts) > 0 {
+			log.Printf("[DEBUG PARSE] Returning wrapper.Data.Accounts")
 			return wrapper.Data.Accounts, nil
 		}
+		// Проверяем data.account
+		if len(wrapper.Data.Account) > 0 {
+			log.Printf("[DEBUG PARSE] Returning wrapper.Data.Account")
+			return wrapper.Data.Account, nil
+		}
+	} else {
+		log.Printf("[DEBUG PARSE] Unmarshal error: %v", err)
 	}
 
 	// Если ничего не распарсилось - возвращаем пустой массив
+	log.Printf("[DEBUG] Failed to parse accounts response, returning empty array. Body: %s", string(bodyBytes))
 	return []AccountDetail{}, nil
 }
 
@@ -378,14 +398,20 @@ func (c *BankAPIClient) parseBalancesResponse(resp *http.Response) ([]BalanceDet
 		return directArray, nil
 	}
 
-	// Вариант 2 обертка с полем "balances" 
+	// Вариант 2 обертка с полем "balances" или "balance"
 	var wrapper BalancesWrapper
 	if err := json.Unmarshal(bodyBytes, &wrapper); err == nil {
 		if len(wrapper.Balances) > 0 {
 			return wrapper.Balances, nil
 		}
+		if len(wrapper.Balance) > 0 {
+			return wrapper.Balance, nil
+		}
 		if len(wrapper.Data.Balances) > 0 {
 			return wrapper.Data.Balances, nil
+		}
+		if len(wrapper.Data.Balance) > 0 {
+			return wrapper.Data.Balance, nil
 		}
 	}
 

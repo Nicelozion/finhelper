@@ -85,16 +85,17 @@ type TokenResponse struct {
 
 // AccountDetail представляет детальную информацию о счете
 type AccountDetail struct {
-	AccountID   string `json:"account_id"`
+	AccountID   string `json:"accountId"`           // camelCase для банковского API
+	Status      string `json:"status,omitempty"`
 	Currency    string `json:"currency"`
-	AccountType string `json:"account_type"`
+	AccountType string `json:"accountType"`         // camelCase для банковского API
 	Nickname    string `json:"nickname,omitempty"`
 	Servicer    struct {
-		SchemeName     string `json:"scheme_name,omitempty"`
+		SchemeName     string `json:"schemeName,omitempty"`     // camelCase
 		Identification string `json:"identification,omitempty"`
 	} `json:"servicer,omitempty"`
-	Account struct {
-		SchemeName     string `json:"scheme_name,omitempty"`
+	Account []struct {
+		SchemeName     string `json:"schemeName,omitempty"`     // camelCase
 		Identification string `json:"identification,omitempty"`
 		Name           string `json:"name,omitempty"`
 	} `json:"account,omitempty"`
@@ -103,8 +104,10 @@ type AccountDetail struct {
 // AccountsWrapper обертка для разных форматов ответа со счетами
 type AccountsWrapper struct {
 	Accounts []AccountDetail `json:"accounts,omitempty"` // множественное число
+	Account  []AccountDetail `json:"account,omitempty"`  // единственное число (для совместимости)
 	Data     struct {
 		Accounts []AccountDetail `json:"accounts,omitempty"` // множественное число
+		Account  []AccountDetail `json:"account,omitempty"`  // единственное число
 	} `json:"data,omitempty"`
 }
 
@@ -112,10 +115,10 @@ type AccountsWrapper struct {
 
 // BalanceDetail представляет информацию о балансе счета
 type BalanceDetail struct {
-	AccountID            string `json:"account_id,omitempty"`
-	CreditDebitIndicator string `json:"credit_debit_indicator"`
+	AccountID            string `json:"accountId,omitempty"`            // camelCase
+	CreditDebitIndicator string `json:"creditDebitIndicator"`           // camelCase
 	Type                 string `json:"type"`
-	DateTime             string `json:"date_time"`
+	DateTime             string `json:"dateTime"`                       // camelCase
 	Amount               struct {
 		Amount   string `json:"amount"`
 		Currency string `json:"currency"`
@@ -127,14 +130,16 @@ type BalanceDetail struct {
 			Amount   string `json:"amount"`
 			Currency string `json:"currency"`
 		} `json:"amount"`
-	} `json:"credit_line,omitempty"`
+	} `json:"creditLine,omitempty"`                                      // camelCase
 }
 
 // BalancesWrapper обертка для разных форматов ответа с балансами
 type BalancesWrapper struct {
 	Balances []BalanceDetail `json:"balances,omitempty"` // множественное число
+	Balance  []BalanceDetail `json:"balance,omitempty"`  // единственное число (для совместимости)
 	Data     struct {
 		Balances []BalanceDetail `json:"balances,omitempty"` // множественное число
+		Balance  []BalanceDetail `json:"balance,omitempty"`  // единственное число
 	} `json:"data,omitempty"`
 }
 
@@ -232,14 +237,21 @@ type ErrorResponse struct {
 
 // ToLegacyAccount конвертирует AccountDetail в упрощенную модель
 func (ad *AccountDetail) ToLegacyAccount(bank string) Account {
+	extID := ""
+	owner := ""
+	if len(ad.Account) > 0 {
+		extID = ad.Account[0].Identification
+		owner = ad.Account[0].Name
+	}
+
 	return Account{
 		ID:       ad.AccountID,
-		ExtID:    ad.Account.Identification,
+		ExtID:    extID,
 		Bank:     bank,
 		Type:     ad.AccountType,
 		Currency: ad.Currency,
 		Balance:  0, // баланс получаем отдельным запросом
-		Owner:    ad.Account.Name,
+		Owner:    owner,
 	}
 }
 
