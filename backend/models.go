@@ -5,9 +5,7 @@ import (
 	"time"
 )
 
-// ============================================================================
 // REQUEST/RESPONSE MODELS
-// ============================================================================
 
 // ConsentRequest представляет запрос на создание согласия
 type ConsentRequest struct {
@@ -38,9 +36,7 @@ type TokenResponse struct {
 	ClientID    string `json:"client_id,omitempty"`
 }
 
-// ============================================================================
 // ACCOUNT MODELS
-// ============================================================================
 
 // AccountDetail представляет детальную информацию о счете
 type AccountDetail struct {
@@ -67,9 +63,7 @@ type AccountsWrapper struct {
 	} `json:"data,omitempty"`
 }
 
-// ============================================================================
 // BALANCE MODELS
-// ============================================================================
 
 // BalanceDetail представляет информацию о балансе счета
 type BalanceDetail struct {
@@ -99,9 +93,7 @@ type BalancesWrapper struct {
 	} `json:"data,omitempty"`
 }
 
-// ============================================================================
 // TRANSACTION MODELS
-// ============================================================================
 
 // TransactionDetail представляет детальную информацию о транзакции
 type TransactionDetail struct {
@@ -159,9 +151,7 @@ type TransactionsWrapper struct {
 	} `json:"data,omitempty"`
 }
 
-// ============================================================================
 // LEGACY MODELS (для обратной совместимости с фронтом)
-// ============================================================================
 
 // Account упрощенная модель счета для фронтенда
 type Account struct {
@@ -193,9 +183,7 @@ type ErrorResponse struct {
 	RequestID string `json:"request_id,omitempty"`
 }
 
-// ============================================================================
 // CONVERSION HELPERS
-// ============================================================================
 
 // ToLegacyAccount конвертирует AccountDetail в упрощенную модель
 func (ad *AccountDetail) ToLegacyAccount(bank string) Account {
@@ -245,9 +233,7 @@ func parseAmount(s string) float64 {
 	return f
 }
 
-// ============================================================================
 // PAYMENT CONSENT MODELS
-// ============================================================================
 
 // PaymentConsentRequest запрос на создание согласия для платежа
 type PaymentConsentRequest struct {
@@ -284,9 +270,7 @@ type PaymentConsentResponse struct {
 	ExpirationDate time.Time   `json:"expiration_date,omitempty"`
 }
 
-// ============================================================================
 // PAYMENT MODELS
-// ============================================================================
 
 // PaymentRequest запрос на создание платежа
 type PaymentRequest struct {
@@ -309,9 +293,7 @@ type PaymentResponse struct {
 	UpdatedAt       time.Time   `json:"updated_at,omitempty"`
 }
 
-// ============================================================================
 // PRODUCT AGREEMENT CONSENT MODELS
-// ============================================================================
 
 // ProductAgreementConsentRequest запрос на создание PA consent
 type ProductAgreementConsentRequest struct {
@@ -333,9 +315,7 @@ type ProductAgreementConsentResponse struct {
 	ExpirationDate time.Time `json:"expiration_date,omitempty"`
 }
 
-// ============================================================================
 // PRODUCT MODELS
-// ============================================================================
 
 // Product представляет банковский продукт
 type Product struct {
@@ -365,9 +345,7 @@ type ProductsWrapper struct {
 	} `json:"data,omitempty"`
 }
 
-// ============================================================================
 // AGREEMENT MODELS
-// ============================================================================
 
 // AgreementRequest запрос на открытие договора
 type AgreementRequest struct {

@@ -102,7 +102,7 @@ func (c *HTTPClient) DoRequest(ctx context.Context, opts RequestOptions) (*http.
 			continue // retry
 		}
 
-		// ✅ КРИТИЧЕСКАЯ ПРОВЕРКА: Content-Type должен быть application/json
+		// КРИТИЧЕСКАЯ ПРОВЕРКА: Content-Type должен быть application/json
 		contentType := resp.Header.Get("Content-Type")
 		if !strings.Contains(contentType, "application/json") {
 			// Читаем первые 256 байт для диагностики

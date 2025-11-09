@@ -15,9 +15,9 @@ type BankAggregator struct {
 
 	// Кэш consent ID для каждого банка и пользователя
 	mu                     sync.RWMutex
-	consentCache           map[string]string // key: "bank|userID" -> consentID (account consent)
-	paymentConsentCache    map[string]string // key: "bank|userID" -> payment consent ID
-	paConsentCache         map[string]string // key: "bank|userID" -> PA consent ID
+	consentCache           map[string]string // key: "bank|userID" - consentID (account consent)
+	paymentConsentCache    map[string]string // key: "bank|userID" - payment consent ID
+	paConsentCache         map[string]string // key: "bank|userID" - PA consent ID
 }
 
 // NewBankAggregator создает новый агрегатор банков
@@ -44,9 +44,7 @@ func NewBankAggregator(config Config) *BankAggregator {
 	return agg
 }
 
-// ============================================================================
 // CONSENT MANAGEMENT
-// ============================================================================
 
 // EnsureConsent создает consent если его нет, или возвращает существующий
 func (a *BankAggregator) EnsureConsent(ctx context.Context, bankCode, userID string) (string, error) {
@@ -121,9 +119,7 @@ func (a *BankAggregator) RevokeConsent(ctx context.Context, bankCode, consentID 
 	return client.RevokeConsent(ctx, consentID)
 }
 
-// ============================================================================
 // ACCOUNTS
-// ============================================================================
 
 // GetAccountsFromAllBanks получает счета из всех банков
 func (a *BankAggregator) GetAccountsFromAllBanks(ctx context.Context, userID string) ([]Account, error) {
@@ -187,9 +183,7 @@ func (a *BankAggregator) GetAccountBalances(ctx context.Context, bankCode, userI
 	return client.GetBalances(ctx, consentID, accountID, userID)
 }
 
-// ============================================================================
 // TRANSACTIONS
-// ============================================================================
 
 // GetTransactions получает транзакции из одного или всех банков
 func (a *BankAggregator) GetTransactions(ctx context.Context, userID, bankFilter string, from, to *time.Time) ([]Transaction, error) {
@@ -313,9 +307,7 @@ func (a *BankAggregator) GetAccountTransactions(ctx context.Context, bankCode, u
 	return transactions, nil
 }
 
-// ============================================================================
 // HELPERS
-// ============================================================================
 
 // getClient возвращает клиент для указанного банка
 func (a *BankAggregator) getClient(bankCode string) (*BankAPIClient, error) {
@@ -336,9 +328,7 @@ func (a *BankAggregator) GetBankByCode(code string) (Bank, error) {
 	return Bank{}, fmt.Errorf("unknown bank: %s", code)
 }
 
-// ============================================================================
 // PAYMENT CONSENT MANAGEMENT
-// ============================================================================
 
 // EnsurePaymentConsent создает payment consent если его нет, или возвращает существующий
 func (a *BankAggregator) EnsurePaymentConsent(ctx context.Context, bankCode, userID string, paymentInfo PaymentInfo) (string, error) {
@@ -395,9 +385,7 @@ func (a *BankAggregator) GetPaymentConsentStatus(ctx context.Context, bankCode, 
 	return client.GetPaymentConsentStatus(ctx, consentID)
 }
 
-// ============================================================================
 // PAYMENTS
-// ============================================================================
 
 // CreatePayment создает платеж в указанном банке
 func (a *BankAggregator) CreatePayment(ctx context.Context, bankCode, userID string, req PaymentRequest) (*PaymentResponse, error) {
@@ -440,9 +428,7 @@ func (a *BankAggregator) GetPaymentStatus(ctx context.Context, bankCode, payment
 	return client.GetPaymentStatus(ctx, paymentID, userID)
 }
 
-// ============================================================================
 // PRODUCT AGREEMENT CONSENT MANAGEMENT
-// ============================================================================
 
 // EnsureProductAgreementConsent создает PA consent если его нет, или возвращает существующий
 func (a *BankAggregator) EnsureProductAgreementConsent(ctx context.Context, bankCode, userID string) (string, error) {
@@ -506,9 +492,7 @@ func (a *BankAggregator) GetProductAgreementConsentStatus(ctx context.Context, b
 	return client.GetProductAgreementConsentStatus(ctx, consentID)
 }
 
-// ============================================================================
 // PRODUCTS
-// ============================================================================
 
 // GetProducts получает список продуктов из банка
 func (a *BankAggregator) GetProducts(ctx context.Context, bankCode, userID, productType string) ([]Product, error) {
@@ -526,9 +510,7 @@ func (a *BankAggregator) GetProducts(ctx context.Context, bankCode, userID, prod
 	return products, nil
 }
 
-// ============================================================================
 // AGREEMENTS
-// ============================================================================
 
 // OpenAgreement открывает договор (вклад/кредит/карта)
 func (a *BankAggregator) OpenAgreement(ctx context.Context, bankCode, userID string, req AgreementRequest) (*AgreementResponse, error) {
