@@ -1,9 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
-import { Connect } from "./pages/Connect";
-import { Accounts } from "./pages/Accounts";
-import { Transactions } from "./pages/Transactions";
-import "./App.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
+import { motion, AnimatePresence } from "framer-motion"
+import { Sidebar } from "@/components/Sidebar"
+import { MobileNav } from "@/components/MobileNav"
+import { Dashboard } from "@/pages/Dashboard"
+import { Transactions } from "@/pages/Transactions"
+import { Analytics } from "@/pages/Analytics"
+import { Settings } from "@/pages/Settings"
+import { Subscription } from "@/pages/Subscription"
+import { Onboarding } from "@/pages/Onboarding"
+import { Connect } from "@/pages/Connect"
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -12,66 +18,86 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
     },
   },
-});
+})
 
-function Navigation() {
-  const location = useLocation();
-  
+function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <nav className="navigation">
-      <div className="nav-container">
-        <Link to="/" className="nav-logo">
-          FinHelper
-        </Link>
-        <div className="nav-links">
-          <Link
-            to="/connect"
-            className={location.pathname === "/connect" ? "active" : ""}
-          >
-            Подключение
-          </Link>
-          <Link
-            to="/accounts"
-            className={location.pathname === "/accounts" ? "active" : ""}
-          >
-            Счета
-          </Link>
-          <Link
-            to="/transactions"
-            className={location.pathname === "/transactions" ? "active" : ""}
-          >
-            Операции
-          </Link>
-        </div>
-      </div>
-    </nav>
-  );
-}
-
-function AppRoutes() {
-  return (
-    <Routes>
-      <Route path="/" element={<Accounts />} />
-      <Route path="/connect" element={<Connect />} />
-      <Route path="/accounts" element={<Accounts />} />
-      <Route path="/transactions" element={<Transactions />} />
-    </Routes>
-  );
+    <div className="min-h-screen bg-background">
+      <Sidebar />
+      <MobileNav />
+      <AnimatePresence mode="wait">
+        <motion.main
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          {children}
+        </motion.main>
+      </AnimatePresence>
+    </div>
+  )
 }
 
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <div className="app">
-          <Navigation />
-          <main className="app-main">
-            <AppRoutes />
-          </main>
-        </div>
+        <Routes>
+          <Route path="/onboarding" element={<Onboarding />} />
+          <Route
+            path="/connect"
+            element={
+              <AppLayout>
+                <Connect />
+              </AppLayout>
+            }
+          />
+          <Route
+            path="/dashboard"
+            element={
+              <AppLayout>
+                <Dashboard />
+              </AppLayout>
+            }
+          />
+          <Route
+            path="/transactions"
+            element={
+              <AppLayout>
+                <Transactions />
+              </AppLayout>
+            }
+          />
+          <Route
+            path="/analytics"
+            element={
+              <AppLayout>
+                <Analytics />
+              </AppLayout>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <AppLayout>
+                <Settings />
+              </AppLayout>
+            }
+          />
+          <Route
+            path="/subscription"
+            element={
+              <AppLayout>
+                <Subscription />
+              </AppLayout>
+            }
+          />
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
       </BrowserRouter>
     </QueryClientProvider>
-  );
+  )
 }
 
-export default App;
+export default App

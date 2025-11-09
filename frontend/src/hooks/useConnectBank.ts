@@ -1,14 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api } from "@/lib/api";
 
 export function useConnectBank() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (bank: "vbank" | "abank" | "sbank") =>
-      api<{ ok: boolean; bank: string; consent_id: string }>(`/api/banks/${bank}/connect`, {
-        method: "POST",
-      }),
+    mutationFn: (bank: string) => api.connectBank(bank),
     onSuccess: () => {
+      // Инвалидируем кеш счетов, чтобы обновить список после подключения
       qc.invalidateQueries({ queryKey: ["accounts"] });
     },
   });

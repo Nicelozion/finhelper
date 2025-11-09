@@ -1,152 +1,111 @@
-import { useState } from "react";
-import { useTransactions } from "../hooks/useTransactions";
-import "./Transactions.css";
+import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { motion } from "framer-motion"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { TransactionTable } from "@/components/TransactionTable"
+import { TableSkeleton } from "@/components/LoadingSkeleton"
+import { api } from "@/lib/api"
+import { Search, Filter } from "lucide-react"
 
 export function Transactions() {
-  const [bank, setBank] = useState<string>("");
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
+  const [search, setSearch] = useState("")
+  const [bankFilter, setBankFilter] = useState<string>("all")
+  const [categoryFilter, setCategoryFilter] = useState<string>("all")
 
-  const params: { from?: string; to?: string; bank?: string } = {};
-  if (bank && bank !== "all") params.bank = bank;
-  if (from) {
-    const fromDate = new Date(from);
-    fromDate.setHours(0, 0, 0, 0);
-    params.from = fromDate.toISOString();
-  }
-  if (to) {
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
-    params.to = toDate.toISOString();
-  }
+  const { data: transactions, isLoading } = useQuery({
+    queryKey: ["transactions", bankFilter],
+    queryFn: () => api.getTransactions({ bank: bankFilter !== "all" ? bankFilter : undefined }),
+  })
 
-  const { data: transactions, isLoading, isError, error } = useTransactions(params);
+  const filteredTransactions = transactions?.filter((tx) => {
+    const matchesSearch = search === "" || 
+      tx.merchant.toLowerCase().includes(search.toLowerCase()) ||
+      tx.description.toLowerCase().includes(search.toLowerCase())
+    const matchesCategory = categoryFilter === "all" || tx.category === categoryFilter
+    return matchesSearch && matchesCategory
+  }) || []
 
-  const totalExpenses =
-    transactions?.filter((t) => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0) || 0;
-  const totalIncome =
-    transactions?.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0) || 0;
-
-  if (isLoading) {
-    return (
-      <div className="transactions-page">
-        <div className="skeleton-container">
-          <div className="skeleton skeleton-header"></div>
-          <div className="skeleton skeleton-row"></div>
-          <div className="skeleton skeleton-row"></div>
-        </div>
-      </div>
-    );
-  }
-
-  if (isError) {
-    const requestId = (error as any)?.requestId;
-    return (
-      <div className="transactions-page">
-        <div className="error-card">
-          <h2>❌ Ошибка загрузки операций</h2>
-          <p>{error instanceof Error ? error.message : "Неизвестная ошибка"}</p>
-          {requestId && <p className="request-id">Request ID: {requestId}</p>}
-        </div>
-      </div>
-    );
-  }
+  const categories = Array.from(new Set(transactions?.map(tx => tx.category) || []))
 
   return (
-    <div className="transactions-page">
-      <h1>Операции</h1>
-
-      <div className="filters">
-        <div className="filter-group">
-          <label htmlFor="bank">Банк:</label>
-          <select
-            id="bank"
-            value={bank}
-            onChange={(e) => setBank(e.target.value)}
-          >
-            <option value="all">Все</option>
-            <option value="vbank">VBank</option>
-            <option value="abank">ABank</option>
-            <option value="sbank">SBank</option>
-          </select>
+    <div className="md:ml-64 pt-16 md:pt-0 p-4 md:p-8">
+      <div className="max-w-7xl mx-auto space-y-8">
+        <div>
+          <h1 className="text-3xl font-bold">Транзакции</h1>
+          <p className="text-muted-foreground mt-2">Все ваши операции</p>
         </div>
 
-        <div className="filter-group">
-          <label htmlFor="from">От:</label>
-          <input
-            id="from"
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
-        </div>
+        {/* Фильтры */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Filter className="h-5 w-5" />
+                Фильтры
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Поиск</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      placeholder="Поиск по описанию..."
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 border rounded-md"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Банк</label>
+                  <select
+                    value={bankFilter}
+                    onChange={(e) => setBankFilter(e.target.value)}
+                    className="w-full px-4 py-2 border rounded-md"
+                  >
+                    <option value="all">Все банки</option>
+                    <option value="ABank">ABank</option>
+                    <option value="VBank">VBank</option>
+                    <option value="SBank">SBank</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Категория</label>
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    className="w-full px-4 py-2 border rounded-md"
+                  >
+                    <option value="all">Все категории</option>
+                    {categories.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        <div className="filter-group">
-          <label htmlFor="to">До:</label>
-          <input
-            id="to"
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-          />
-        </div>
+        {/* Таблица транзакций */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+        >
+          {isLoading ? (
+            <TableSkeleton />
+          ) : (
+            <TransactionTable transactions={filteredTransactions} />
+          )}
+        </motion.div>
       </div>
-
-      {!transactions || transactions.length === 0 ? (
-        <div className="empty-state">
-          Данных за выбранный период нет
-        </div>
-      ) : (
-        <>
-          <div className="table-container">
-            <table className="transactions-table">
-              <thead>
-                <tr>
-                  <th>Дата</th>
-                  <th>Сумма</th>
-                  <th>Валюта</th>
-                  <th>Мерчант</th>
-                  <th>Категория</th>
-                  <th>Описание</th>
-                  <th>Банк</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((tx) => (
-                  <tr key={tx.id}>
-                    <td>{new Date(tx.date).toLocaleDateString("ru-RU")}</td>
-                    <td className={tx.amount < 0 ? "expense" : "income"}>
-                      {tx.amount > 0 ? "+" : ""}
-                      {tx.amount.toFixed(2)}
-                    </td>
-                    <td>{tx.currency}</td>
-                    <td>{tx.merchant || "-"}</td>
-                    <td>{tx.category || "-"}</td>
-                    <td>{tx.description || "-"}</td>
-                    <td>{tx.bank.toUpperCase()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="summary">
-            <div className="summary-item">
-              <span className="summary-label">Всего операций:</span>
-              <span className="summary-value">{transactions.length}</span>
-            </div>
-            <div className="summary-item">
-              <span className="summary-label">Сумма расходов:</span>
-              <span className="summary-value expense">{totalExpenses.toFixed(2)}</span>
-            </div>
-            <div className="summary-item">
-              <span className="summary-label">Сумма доходов:</span>
-              <span className="summary-value income">+{totalIncome.toFixed(2)}</span>
-            </div>
-          </div>
-        </>
-      )}
     </div>
-  );
+  )
 }
-
